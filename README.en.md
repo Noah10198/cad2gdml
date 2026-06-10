@@ -1,36 +1,135 @@
-# cad2gdml
+# CAD2GDML
 
-#### Description
-{**When you're done, you can delete the content in this README and update the file with details for others getting started with your repository**}
+**STEP to GDML geometry conversion tool** — Convert mechanical CAD models (STEP) into Geant4 simulation geometry definitions (GDML) with mesh generation via GMSH.
 
-#### Software Architecture
-Software architecture description
+---
 
-#### Installation
+## Overview
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+CAD2GDML is a desktop GUI application that bridges the gap between CAD design and particle physics simulation. It imports STEP assembly files, renders them in a 3D OpenCASCADE viewer, generates finite-element meshes using GMSH, and exports the geometry in GDML format for Geant4-based simulation toolkits.
 
-#### Instructions
+### Features
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+- **STEP Import** — Load `.step` / `.stp` assembly files with automatic hierarchy tree building
+- **3D CAD Viewer** — PythonOCC-powered interactive 3D display with per-part coloring
+- **GMSH Meshing** — Background mesh generation (non-blocking, configurable parameters)
+- **Mesh Preview** — Standalone VTK mesh viewer with cube axes (non-modal, non-blocking)
+- **GDML Export** — Convert meshed geometry to Geant4 GDML format *(in progress)*
+- **VTK Export** — Save generated mesh files to user-specified location *(in progress)*
+- **Dark/Light Theme** — Full application-wide theme toggle
+- **Material Assignment** — Global and per-part material library *(in progress)*
 
-#### Contribution
+---
 
-1.  Fork the repository
-2.  Create Feat_xxx branch
-3.  Commit your code
-4.  Create Pull Request
+## Requirements
 
+| Dependency | Version |
+|---|---|
+| Python | >= 3.9 |
+| PyQt6 | >= 6.4 |
+| pythonocc-core | >= 7.6 |
+| VTK | >= 9.2 |
+| numpy | >= 1.21 |
+| GMSH (executable) | >= 4.10 |
 
-#### Gitee Feature
+---
 
-1.  You can use Readme\_XXX.md to support different languages, such as Readme\_en.md, Readme\_zh.md
-2.  Gitee blog [blog.gitee.com](https://blog.gitee.com)
-3.  Explore open source project [https://gitee.com/explore](https://gitee.com/explore)
-4.  The most valuable open source project [GVP](https://gitee.com/gvp)
-5.  The manual of Gitee [https://gitee.com/help](https://gitee.com/help)
-6.  The most popular members  [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+## Installation
+
+### 1. Create a Conda environment (recommended)
+
+```bash
+conda create -n cad2gdml python=3.10
+conda activate cad2gdml
+```
+
+### 2. Install Python dependencies
+
+```bash
+pip install -r codebuddy-2st/requirements.txt
+```
+
+If pip is unable to resolve pythonocc-core or VTK on Windows, use conda-forge instead:
+
+```bash
+conda install -c conda-forge pythonocc-core vtk
+```
+
+### 3. Obtain GMSH
+
+- Download `gmsh-4.10.0-Windows64.zip` from [gmsh.info](https://gmsh.info)
+- Extract `gmsh.exe` and place it in `codebuddy-2st/gmsh/` (auto-detected), or add it to your system `PATH`
+
+### 4. Run
+
+```bash
+cd codebuddy-2st
+python main.py
+```
+
+---
+
+## Project Structure
+
+```
+codebuddy-2st/
+  app/            — Application logic (main window, signal wiring)
+  core/           — Data models: GDataNode, GeoDataAgent, materials library
+  fileio/         — File export (GDML, VTK stubs)
+  mesh/           — Meshing subsystem
+    gmsh_dialog.py    — Parameter configuration dialog
+    mesh_runner.py    — GMSH background thread (QProcess + .geo scripts)
+    mesh_progress.py  — Non-blocking progress dialog
+    mesh_viewer.py    — VTK-based 3D mesh preview window
+  ui/             — Qt widgets
+    toolbar.py        — Office-style ribbon toolbar (emoji icons)
+    project_tree.py   — Geometry hierarchy tree with visibility toggles
+    occ_widget.py     — PythonOCC 3D display widget
+    geo_param_widget.py — Property inspection panel
+  utils/          — AsyncLogger, TaskManager
+  gmsh/           — Place gmsh.exe here
+  _mesh_temp/     — Temporary meshing workspace (auto-cleaned each run)
+  requirements.txt
+  main.py         — Application entry point
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                  MainWindow                      │
+│  ┌─────────┐ ┌──────────┐ ┌────────┐ ┌──────┐  │
+│  │ Toolbar │ │Project   │ │ OCC    │ │Prop  │  │
+│  │(Ribbon) │ │Tree      │ │Viewer  │ │Panel │  │
+│  └─────────┘ └──────────┘ └────────┘ └──────┘  │
+│  ┌──────────────────────────────────────────┐   │
+│  │            System Log                     │   │
+│  └──────────────────────────────────────────┘   │
+│                     +                            │
+│  MeshRunner (QThread) → gmsh.exe → .vtk files    │
+│                     +                            │
+│  MeshViewer (QDialog) → QVTKRenderWindowInteractor│
+└─────────────────────────────────────────────────┘
+```
+
+- **Mesh generation** runs in a background `QThread` with `QProcess`, keeping the UI responsive
+- **Mesh viewer** opens as a non-modal `QDialog` (like MATLAB figure popups) — click back to main window freely
+- **Intermediate files** (STEP, GEO, VTK) are stored in `_mesh_temp/` and cleaned each session
+
+---
+
+## License
+
+[MIT](LICENSE) © ready2run
+
+---
+
+## Acknowledgments
+
+- [OpenCASCADE Technology](https://dev.opencascade.org/)
+- [GMSH](https://gmsh.info/) — Finite element mesh generator
+- [VTK](https://vtk.org/) — Visualization Toolkit
+- [PythonOCC](https://github.com/tpaviot/pythonocc-core)
+- [Geant4](https://geant4.web.cern.ch/) — GDML geometry format
