@@ -366,17 +366,23 @@ class MainWindow(QMainWindow):
         self._mesh_runner.start()
 
     def _slot_view_mesh(self):
-        """Open a non-blocking VTK mesh viewer window."""
+        """Open a fresh non-blocking VTK mesh viewer window."""
         if not self._meshed_nodes:
             self._logger.log_system("No mesh data to view. Run meshing first.")
             QMessageBox.information(self, "No Mesh",
                                     "Generate a mesh before viewing.")
             return
 
-        # Create or reuse the mesh viewer window
-        if self._mesh_viewer is None:
-            self._mesh_viewer = MeshViewer()
+        # Destroy previous viewer to avoid stale OpenGL context
+        if self._mesh_viewer is not None:
+            try:
+                self._mesh_viewer.close()
+            except Exception:
+                pass
+            self._mesh_viewer.deleteLater()
+            self._mesh_viewer = None
 
+        self._mesh_viewer = MeshViewer()
         self._mesh_viewer.show()
         self._mesh_viewer.raise_()
         self._mesh_viewer.load_mesh(self._meshed_nodes)

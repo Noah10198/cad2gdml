@@ -11,6 +11,10 @@ import os
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Suppress Qt dark border warning on Windows (cosmetic only)
+os.environ["QT_WIN_NEED_DARK_BORDER"] = "1"
+os.environ["QT_LOGGING_RULES"] = "qt.qpa.windows.warning=false"
+
 from PyQt6.QtWidgets import QApplication
 
 from app.main_window import MainWindow
