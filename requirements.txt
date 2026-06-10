@@ -1,0 +1,4 @@
+# CAD2GDML Python 依赖
+PyQt6>=6.4
+pythonocc-core>=7.6
+numpy>=1.21
