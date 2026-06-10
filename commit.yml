@@ -2,160 +2,76 @@
 branches: {
   }
 fileChange:
+  /.gitignore:
+    newFile: !uuid '2c9124b1f09ff733489585e941f48aaa317f2105'
+    oldFile: !uuid '5d947ca8879f8a9072fe485c566204e3c2929e80'
+  /README.en.md:
+    newFile: !uuid 'ec1a545c7e794cd6738250453558d1f53ddf879f'
+    oldFile: !uuid 'f6738562c205e1f4bb4b384abb3fe3a387b31344'
+  /README.md:
+    newFile: !uuid '86b3656cb7f27fdecaac761d72041cd4fae7a184'
+    oldFile: !uuid 'a37ab734235f8c1f1118bed3ce6a13378b716b74'
   /_mesh_temp:
-    newFile: !uuid 'a2650373483ab7a2a5eee1a81b147337821e1be3'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid 'a2650373483ab7a2a5eee1a81b147337821e1be3'
   /_mesh_temp/GEO_0CA062C42AE0_9.vtk:
-    newFile: !uuid 'a6543216ff20e0a5146fe111e03a83c20d3eb9e1'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid 'a6543216ff20e0a5146fe111e03a83c20d3eb9e1'
   /_mesh_temp/GEO_12DAC1BE931F_12.vtk:
-    newFile: !uuid '658cf9979cdf9ec55f993830d4799afc92e34714'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '658cf9979cdf9ec55f993830d4799afc92e34714'
   /_mesh_temp/GEO_25321F99850A_6.vtk:
-    newFile: !uuid 'de60abdbdbe7919b0f0efbf7364b0f39c48d9cbf'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid 'de60abdbdbe7919b0f0efbf7364b0f39c48d9cbf'
   /_mesh_temp/GEO_38957694BA30_16.vtk:
-    newFile: !uuid '448ca6e95e06080c580687fc44a89b20ed0b1391'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '448ca6e95e06080c580687fc44a89b20ed0b1391'
   /_mesh_temp/GEO_392A65566F4D_14.vtk:
-    newFile: !uuid '1594f61d2912192ed5e7f936070e2580e54a08a5'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '1594f61d2912192ed5e7f936070e2580e54a08a5'
   /_mesh_temp/GEO_43B3C2B3F842_17.vtk:
-    newFile: !uuid '295042732cf496e2b75101baaf800f5839d76ee0'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '295042732cf496e2b75101baaf800f5839d76ee0'
   /_mesh_temp/GEO_76A2E3C371CE_0.vtk:
-    newFile: !uuid '7b1af0d0a3d7495d0394aa21b025d8a70ba818cc'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '7b1af0d0a3d7495d0394aa21b025d8a70ba818cc'
   /_mesh_temp/GEO_89F14F9B2C33_10.vtk:
-    newFile: !uuid 'a26d940848a0c7d20e611b47e28ff6463ecffc20'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid 'a26d940848a0c7d20e611b47e28ff6463ecffc20'
   /_mesh_temp/GEO_8D083993339A_3.vtk:
-    newFile: !uuid 'f0cc3546db570ee925f12604007d978d702caa23'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid 'f0cc3546db570ee925f12604007d978d702caa23'
   /_mesh_temp/GEO_8F9E927FCAA7_1.vtk:
-    newFile: !uuid 'ec7f0c4856a8f4647289be0ac67eb719f5d8223d'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid 'ec7f0c4856a8f4647289be0ac67eb719f5d8223d'
   /_mesh_temp/GEO_906EA43FCA77_11.vtk:
-    newFile: !uuid 'fb89f3ae75b14544ab9a516338a31abbafa69527'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid 'fb89f3ae75b14544ab9a516338a31abbafa69527'
   /_mesh_temp/GEO_C2A77185A915_8.vtk:
-    newFile: !uuid '7775efae40cd1f3689504a11d3cbce4906ae9c05'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '7775efae40cd1f3689504a11d3cbce4906ae9c05'
   /_mesh_temp/GEO_C3EF13629A14_15.vtk:
-    newFile: !uuid '2a358faae6665a4e43accfbecf0dcc0ec69ee8c8'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '2a358faae6665a4e43accfbecf0dcc0ec69ee8c8'
   /_mesh_temp/GEO_D405C3DB2D45_4.vtk:
-    newFile: !uuid '9f0e193766d43206299a0cee9f303ab24df7700d'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '9f0e193766d43206299a0cee9f303ab24df7700d'
   /_mesh_temp/GEO_D802A4D44B4D_13.vtk:
-    newFile: !uuid '9ebfc1b54253dfd61febcfeeef216b614c5bb2cf'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '9ebfc1b54253dfd61febcfeeef216b614c5bb2cf'
   /_mesh_temp/GEO_E0BD40E1F73E_2.vtk:
-    newFile: !uuid '8bfd253bad9ea8e1b9d1d59419549fe605241d50'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '8bfd253bad9ea8e1b9d1d59419549fe605241d50'
   /_mesh_temp/GEO_F411D8D32CB6_5.vtk:
-    newFile: !uuid '76607c7f0f9a734dae7a7806e7dec65a69949fad'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '76607c7f0f9a734dae7a7806e7dec65a69949fad'
   /_mesh_temp/GEO_F5650025FBA0_7.vtk:
-    newFile: !uuid '2fa59a4fa4436de485493c64715831ad2788c9a5'
-    oldFile: null
-  /app:
-    newFile: !uuid 'f2fcc7502806d974a1dce700453e8dd4a70f6d94'
-    oldFile: null
-  /app/__init__.py:
-    newFile: !uuid 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'
-    oldFile: null
-  /app/main_window.py:
-    newFile: !uuid '066094c8ecb0b5f925676d4649a0d84b09b3b52d'
-    oldFile: null
-  /core:
-    newFile: !uuid 'e04ae9fd375f3ac472e0a8eed6e2b578f649ccd8'
-    oldFile: null
-  /core/__init__.py:
-    newFile: !uuid 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'
-    oldFile: null
-  /core/g_data_node.py:
-    newFile: !uuid '7436d13aca79a1294d42c7ca3e06d83bd4222b3e'
-    oldFile: null
-  /core/geo_data_agent.py:
-    newFile: !uuid '51066173ff7987069897ebab7332c410fa215b1c'
-    oldFile: null
-  /core/lego_color_singleton.py:
-    newFile: !uuid 'bbddec93ac8024084fdd604a64fb578228bf6d63'
-    oldFile: null
-  /core/materials_lib.py:
-    newFile: !uuid '4337043fbdf679cb1402c5b19827dbae691722c0'
-    oldFile: null
-  /core/step_reader.py:
-    newFile: !uuid 'b103faf18d513bf7d4e3583e4f1c8eddea5e6527'
-    oldFile: null
-  /fileio:
-    newFile: !uuid '9d1dcfdaf1a6857c5f83dc27019c7600e1ffaff8'
-    oldFile: null
-  /fileio/__init__.py:
-    newFile: !uuid 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'
-    oldFile: null
-  /gmsh:
-    newFile: !uuid 'ec2a674cea3d983b9b687c8d0b23f36b927fec74'
-    oldFile: null
-  /gmsh/gmsh.exe:
-    newFile: !uuid '8d0ad8981b11c5fff6977e42e8eaa1a65c2df89b'
-    oldFile: null
-  /main.py:
-    newFile: !uuid 'bcf836ebe3883f393f93227af38a9f81586024a7'
-    oldFile: null
-  /mesh:
-    newFile: !uuid 'ce3202efc9bf682eac683038e8388239d099753f'
-    oldFile: null
-  /mesh/__init__.py:
-    newFile: !uuid 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'
-    oldFile: null
-  /mesh/gmsh_dialog.py:
-    newFile: !uuid '210226131e9002f818959cbe2b612ef853564070'
-    oldFile: null
-  /mesh/mesh_progress.py:
-    newFile: !uuid 'b01310aea7a0499863a19ddeb2b035e2c9b2075a'
-    oldFile: null
-  /mesh/mesh_runner.py:
-    newFile: !uuid '02d74195e5f4348552fac174f91fa2ed6f192373'
-    oldFile: null
-  /mesh/mesh_viewer.py:
-    newFile: !uuid '39e1203cde5b4767cd78481b06179e9a1434b1ba'
-    oldFile: null
+    newFile: null
+    oldFile: !uuid '2fa59a4fa4436de485493c64715831ad2788c9a5'
   /requirements.txt:
-    newFile: !uuid 'dcf692e4841b70d40240f5473c97b4d39e09724d'
-    oldFile: null
-  /ui:
-    newFile: !uuid '5ad5c49c6c8a2421e288782a4d062625222eb7b9'
-    oldFile: null
-  /ui/__init__.py:
-    newFile: !uuid 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'
-    oldFile: null
-  /ui/geo_param_widget.py:
-    newFile: !uuid '5a5287ee55587324d04aff4b3da80ca2f2bac4d3'
-    oldFile: null
-  /ui/occ_widget.py:
-    newFile: !uuid '4acac3010bf04fb0dae997bc58c705f58b643182'
-    oldFile: null
-  /ui/project_tree.py:
-    newFile: !uuid '670ee8658b6b6d52ae827b516b3571e1fbe85620'
-    oldFile: null
-  /ui/toolbar.py:
-    newFile: !uuid '5544876e8dda62f54511de8788512bc927e00f72'
-    oldFile: null
-  /utils:
-    newFile: !uuid '0127d554bef3035d2957e96d7681db9bd7759534'
-    oldFile: null
-  /utils/__init__.py:
-    newFile: !uuid 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'
-    oldFile: null
-  /utils/logger.py:
-    newFile: !uuid '4b1092dd47843b6d4f9d306f42022eee23ee247e'
-    oldFile: null
-  /utils/task_manager.py:
-    newFile: !uuid 'cfcb62e2da41c0bfd40f270d4b040dc92c0827e7'
-    oldFile: null
-gitCommitId: !uuid 'c556493d2bceb658de1b1b15990e2cac23d8d529'
+    newFile: !uuid 'e36f153eda532cccd037dbb79dbe8a8088ae6e64'
+    oldFile: !uuid 'dcf692e4841b70d40240f5473c97b4d39e09724d'
+gitCommitId: !uuid '46928a640dc81e72145140f845093376a7b99d67'
 renames: {
   }
-revisionId: 2
+revisionId: 3
