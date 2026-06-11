@@ -278,6 +278,23 @@ class WidgetOCC(QWidget):
         except Exception:
             return None
 
+    # ---- Cleanup ----
+
+    def shutdown(self):
+        """Properly release OCC display/OpenGL context before the parent window
+        is destroyed, preventing 'wglMakeCurrent() has failed' errors."""
+        self._inited = False
+        if self._display is not None:
+            try:
+                self._display.Context.RemoveAll(True)
+            except Exception:
+                pass
+            try:
+                self._display.View.Remove()
+            except Exception:
+                pass
+        self._display = None
+
     # ---- Shape display API ----
 
     def add_shape(self, ais_shape: AIS_Shape, color: Optional[Quantity_Color] = None,

@@ -38,6 +38,7 @@ GEO_TEMPLATE = (
     'Mesh.ElementOrder = %7;\n'
     'Mesh 2;\n'
     'Save "%8";\n'
+    'Save "%9";\n'
     'Exit;\n'
 )
 
@@ -142,6 +143,7 @@ class MeshRunner(QThread):
                 step_file = os.path.join(self._work_dir, f"{safe_name}_in.step")
                 geo_file = os.path.join(self._work_dir, f"{safe_name}.geo")
                 vtk_file = os.path.join(self._work_dir, f"{safe_name}.vtk")
+                msh_file = os.path.join(self._work_dir, f"{safe_name}.msh")
 
                 self.log_emitted.emit(f"[{idx+1}/{total}] Preparing {node_label} ...")
                 self.progress_updated.emit(pct, f"Writing STEP for {node_label}...")
@@ -168,7 +170,8 @@ class MeshRunner(QThread):
                     .replace("%5", str(size_min)) \
                     .replace("%6", str(size_max)) \
                     .replace("%7", str(self._order)) \
-                    .replace("%8", vtk_file)
+                    .replace("%8", vtk_file) \
+                    .replace("%9", msh_file)
 
                 with open(geo_file, "w", encoding="utf-8") as f:
                     f.write(geo_content)

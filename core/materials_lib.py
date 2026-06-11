@@ -191,7 +191,13 @@ class MaterialsLib:
     - 化合物材料 (CompoundMaterial) -- 原子比
     - 混合物材料 (MixtureMaterial) -- 质量比
     - NIST 全局材料选择状态
+
+    控制标记：
+    - GDML_OUTPUT_ENABLED: 设为 False 可关闭保存时 GDML 打印输出
     """
+
+    # ---- 控制标记 ----
+    GDML_OUTPUT_ENABLED: bool = True
 
     _instance: Optional['MaterialsLib'] = None
 
@@ -226,6 +232,7 @@ class MaterialsLib:
 
         # 初始化默认数据
         self._init_default_materials()
+        self._init_default_local_materials()
 
     # ========== ID 生成 ==========
 
@@ -317,6 +324,106 @@ class MaterialsLib:
                 or self._comp_list.pop(mat_id, None) is not None
                 or self._mix_list.pop(mat_id, None) is not None)
 
+    @staticmethod
+    def to_gdml_string(mat) -> str:
+        """
+        将局部材料转换为验证用 GDML 格式字符串。
+
+        格式参考：
+          化合物: <material name="Water" formula="H2O"><D value="1.0"/><composite n="2" ref="H"/><composite n="1" ref="O"/></material>
+          混合物: <material name="Air"><D value="0.00129"/><fraction n="0.7" ref="N"/><fraction n="0.3" ref="O"/></material>
+        """
+        import xml.etree.ElementTree as ET
+        from xml.dom import minidom
+
+        if isinstance(mat, CustomElement):
+            elem = ET.Element("element", {
+                "name": mat.name,
+                "formula": mat.symbol,
+                "Z": str(int(mat.number)),
+            })
+            ET.SubElement(elem, "atom", {"value": str(mat.quality)})
+            return minidom.parseString(ET.tostring(elem, encoding="unicode")).toprettyxml(indent="  ")
+
+        elif isinstance(mat, CompoundMaterial):
+            # Derive chemical formula from items, in user-specified order
+            # e.g. items=[O(1), H(2)] → "OH2"; items=[H(2), O(1)] → "H2O"
+            formula_parts = []
+            for item in mat.items:
+                if item.ratio == 1:
+                    formula_parts.append(item.element_name)
+                else:
+                    formula_parts.append(f"{item.element_name}{item.ratio}")
+            formula = "".join(formula_parts) if formula_parts else mat.mat_name
+            mat_elem = ET.Element("material", {"name": mat.mat_name, "formula": formula})
+            ET.SubElement(mat_elem, "D", {
+                "value": f"{mat.density:.4f}",
+            })
+            for item in mat.items:
+                ET.SubElement(mat_elem, "composite", {
+                    "n": str(int(item.ratio)),
+                    "ref": item.element_name,
+                })
+            return minidom.parseString(ET.tostring(mat_elem, encoding="unicode")).toprettyxml(indent="  ")
+
+        elif isinstance(mat, MixtureMaterial):
+            mat_elem = ET.Element("material", {"name": mat.mat_name})
+            ET.SubElement(mat_elem, "D", {
+                "value": f"{mat.density:.4f}",
+                "unit": mat.unit,
+            })
+            for item in mat.items:
+                ET.SubElement(mat_elem, "fraction", {
+                    "n": f"{item.ratio:.4f}",
+                    "ref": item.element_name,
+                })
+            return minidom.parseString(ET.tostring(mat_elem, encoding="unicode")).toprettyxml(indent="  ")
+
+        return ""
+
+    # ========== JSON 持久化 ==========
+
+    def save_local_materials_to_json(self, filepath: str) -> bool:
+        """将所有的局部材料保存为 JSON 文件。"""
+        import json
+        data = {
+            "custom_elements": [e.to_dict() for e in self._cust_ele_list.values()],
+            "compounds": [c.to_dict() for c in self._comp_list.values()],
+            "mixtures": [m.to_dict() for m in self._mix_list.values()],
+        }
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception:
+            return False
+
+    def load_local_materials_from_json(self, filepath: str) -> int:
+        """从 JSON 文件加载局部材料，覆盖当前库。"""
+        import json
+        self._cust_ele_list.clear()
+        self._comp_list.clear()
+        self._mix_list.clear()
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            count = 0
+            for d in data.get("custom_elements", []):
+                e = CustomElement.from_dict(d)
+                self._cust_ele_list[e.mat_id] = e
+                count += 1
+            for d in data.get("compounds", []):
+                c = CompoundMaterial.from_dict(d)
+                self._comp_list[c.mat_id] = c
+                count += 1
+            for d in data.get("mixtures", []):
+                m = MixtureMaterial.from_dict(d)
+                self._mix_list[m.mat_id] = m
+                count += 1
+            return count
+        except Exception:
+            return 0
+
     def get_mat_cate_by_id(self, mat_id: str) -> MatCategory:
         """根据 ID 获取材料分类"""
         if mat_id in self._cust_ele_list:
@@ -367,22 +474,45 @@ class MaterialsLib:
     def get_add_flag(self) -> bool:
         return self._add_flag
 
-    # ========== 元素查询 ==========
+    # ========== 元素数据 ==========
+
+    # 从 element.xml 加载的全部元素数据：symbol -> (Z, atom)
+    _ELEMENT_DB: Dict[str, Tuple[float, float]] = {}
+
+    @classmethod
+    def load_elements_from_xml(cls, xml_path: str) -> int:
+        """从 element.xml 加载元素数据。"""
+        import xml.etree.ElementTree as ET
+        count = 0
+        cls._ELEMENT_DB.clear()
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+            for elem in root.iter('element'):
+                formula = elem.get('formula', '')
+                z_str = elem.get('Z', '0')
+                atom_elem = elem.find('atom')
+                atom_str = atom_elem.get('value', '0') if atom_elem is not None else '0'
+                try:
+                    z = float(z_str)
+                    atom = float(atom_str)
+                except ValueError:
+                    continue
+                cls._ELEMENT_DB[formula] = (z, atom)
+                count += 1
+        except Exception:
+            pass
+        return count
 
     @staticmethod
     def get_z_and_atom_by_element_name(name: str) -> Tuple[float, float]:
         """根据元素名称查询原子序数和原子量"""
-        # NIST 标准原子量
-        element_data = {
-            'H': (1, 1.008), 'He': (2, 4.003), 'Li': (3, 6.941), 'Be': (4, 9.012),
-            'B': (5, 10.811), 'C': (6, 12.011), 'N': (7, 14.007), 'O': (8, 15.999),
-            'F': (9, 18.998), 'Ne': (10, 20.180), 'Na': (11, 22.990), 'Mg': (12, 24.305),
-            'Al': (13, 26.982), 'Si': (14, 28.086), 'P': (15, 30.974), 'S': (16, 32.065),
-            'Cl': (17, 35.453), 'Ar': (18, 39.948), 'K': (19, 39.098), 'Ca': (20, 40.078),
-            'Fe': (26, 55.845), 'Cu': (29, 63.546), 'Zn': (30, 65.380),
-            'Ag': (47, 107.868), 'Sn': (50, 118.710), 'Au': (79, 196.967),
-        }
-        return element_data.get(name, (0, 0.0))
+        return MaterialsLib._ELEMENT_DB.get(name, (0, 0.0))
+
+    @classmethod
+    def get_all_element_symbols(cls) -> List[str]:
+        """获取所有可用元素符号（按原子序数排序）"""
+        return sorted(cls._ELEMENT_DB.keys(), key=lambda s: cls._ELEMENT_DB[s][0])
 
     # ========== 材料查找 ==========
 
@@ -410,7 +540,7 @@ class MaterialsLib:
     # ========== 默认 NIST 材料 ==========
 
     def _init_default_materials(self):
-        """初始化默认 NIST 材料"""
+        """初始化默认 NIST 材料（7 种常用材料作为 fallback）"""
         defaults = [
             ("G4_AIR", 0.001205, "Air (dry, near sea level)"),
             ("G4_Al", 2.699, "Aluminum"),
@@ -424,6 +554,63 @@ class MaterialsLib:
         # 默认全部选中
         self._nist_right_list = self._nist_left_list[:]
 
+    def _init_default_local_materials(self):
+        """Add default local materials matching C++ initLocalMaterial()."""
+        # Default compound: water (H2O)
+        h_z, h_atom = self.get_z_and_atom_by_element_name("H")
+        o_z, o_atom = self.get_z_and_atom_by_element_name("O")
+        water = CompoundMaterial(
+            mat_id=self._next_id(),
+            mat_name="water",
+            density=1.0,
+            unit="g/cm3",
+            items=[
+                CompoundItem(ratio=2, element_name="H", z=h_z, atom=h_atom),
+                CompoundItem(ratio=1, element_name="O", z=o_z, atom=o_atom),
+            ],
+        )
+        self.add_compound(water)
+
+        # Default mixture: air (N 0.7, O 0.3)
+        n_z, n_atom = self.get_z_and_atom_by_element_name("N")
+        air = MixtureMaterial(
+            mat_id=self._next_id(),
+            mat_name="air_user",
+            density=0.00129,
+            unit="g/cm3",
+            items=[
+                MixtureItem(ratio=0.7, element_name="N", z=n_z, atom=n_atom),
+                MixtureItem(ratio=0.3, element_name="O", z=o_z, atom=o_atom),
+            ],
+        )
+        self.add_mixture(air)
+
+    def load_nist_from_file(self, filepath: str) -> int:
+        """从 nist.txt 加载所有 G4_ 材料到全局 NIST 列表。
+
+        Args:
+            filepath: nist.txt 文件路径。
+
+        Returns:
+            加载的材料数量。
+        """
+        loaded = []
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                for line in f:
+                    name = line.strip()
+                    if name and name.startswith("G4_"):
+                        loaded.append(name)
+        except (FileNotFoundError, IOError):
+            print(f"Warning: Could not load NIST file: {filepath}")
+            return 0
+
+        if loaded:
+            self._nist_left_list = loaded[:]
+            self._nist_right_list = loaded[:]
+
+        return len(loaded)
+
     # ========== 序列化 ==========
 
     def clear(self):
@@ -436,6 +623,7 @@ class MaterialsLib:
         self._nist_left_list.clear()
         self._nist_right_list.clear()
         self._init_default_materials()
+        self._init_default_local_materials()
 
     def to_dict(self) -> dict:
         """序列化为字典"""

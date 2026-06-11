@@ -5,7 +5,7 @@ Provides a QTreeWidget with:
 - A "Geometry" root node containing imported STEP file hierarchies
 - Global/Local Materials nodes for material assignment
 - Checkbox visibility toggling per geometry item
-- Right-click context menu with common operations
+- Visibility checkbox toggling per geometry item
 """
 
 from typing import Optional, TYPE_CHECKING
@@ -57,6 +57,10 @@ class ProjectTreeWidget(QWidget):
     item_visibility_changed = pyqtSignal(str, bool)  # entry_id, visible
     import_step_requested = pyqtSignal()
     assign_material_requested = pyqtSignal(str, str)
+    add_local_material_requested = pyqtSignal()
+    remove_local_material_requested = pyqtSignal(str)  # mat_id
+    save_local_materials_requested = pyqtSignal()
+    load_local_materials_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -79,7 +83,7 @@ class ProjectTreeWidget(QWidget):
         self._tree.setMinimumWidth(180)
         self._tree.setEditTriggers(QTreeWidget.EditTrigger.NoEditTriggers)
         self._tree.setSelectionBehavior(QTreeWidget.SelectionBehavior.SelectRows)
-        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self._tree.setAnimated(True)
         self._tree.setIndentation(16)
 
@@ -94,7 +98,7 @@ class ProjectTreeWidget(QWidget):
         )
 
         self._geometry_root.setExpanded(True)
-        self._material_global.setExpanded(True)
+        self._material_global.setExpanded(False)   # too many to show expanded
         self._material_local.setExpanded(True)
 
         layout.addWidget(self._tree)
@@ -105,6 +109,7 @@ class ProjectTreeWidget(QWidget):
         # Connect signals
         self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.itemChanged.connect(self._on_item_changed)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
 
     def set_dark_theme(self, is_dark: bool):
@@ -173,11 +178,70 @@ class ProjectTreeWidget(QWidget):
         for child in self._geometry_root.takeChildren():
             del child
 
+    def populate_global_materials(self, material_names: list):
+        """Populate the Global Materials root with all NIST material children."""
+        for child in self._material_global.takeChildren():
+            del child
+        for name in sorted(material_names):
+            child = TreeItemWithInfo(self._material_global, name,
+                                     TREE_ITEM_TYPE['GLOBAL_MATERIAL'])
+            child.setData(0, Qt.ItemDataRole.UserRole, f"__mat__:{name}")
+
+    def populate_local_materials(self, mat_lib):
+        """Populate the Local Materials root from the MaterialsLib."""
+        for child in self._material_local.takeChildren():
+            del child
+        for mat in mat_lib.get_all_local_materials():
+            name = mat.mat_name if hasattr(mat, 'mat_name') else mat.name
+            child = TreeItemWithInfo(self._material_local, name,
+                                     TREE_ITEM_TYPE['LOCAL_MATERIAL'])
+            mat_id = mat.mat_id if hasattr(mat, 'mat_id') else getattr(mat, 'mat_id', '')
+            child.setData(0, Qt.ItemDataRole.UserRole, f"__local__:{mat_id}")
+
+    def _on_context_menu(self, pos):
+        """Right-click context menu for Local Materials."""
+        item = self._tree.itemAt(pos)
+        if item is None:
+            return
+        if item is self._material_local:
+            menu = QMenu(self)
+            add_action = menu.addAction("➕ Add Material...")
+            add_action.triggered.connect(self.add_local_material_requested.emit)
+            menu.addSeparator()
+            save_action = menu.addAction("💾 Save Materials...")
+            save_action.triggered.connect(self.save_local_materials_requested.emit)
+            load_action = menu.addAction("📂 Load Materials...")
+            load_action.triggered.connect(self.load_local_materials_requested.emit)
+            menu.exec(self._tree.viewport().mapToGlobal(pos))
+        elif item.type() == TREE_ITEM_TYPE['LOCAL_MATERIAL']:
+            mat_id = self._extract_local_mat_id(item)
+            if not mat_id:
+                return
+            menu = QMenu(self)
+            del_action = menu.addAction("❌ Delete Material")
+            menu.addSeparator()
+            del_action.triggered.connect(
+                lambda: self.remove_local_material_requested.emit(mat_id))
+            menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _extract_local_mat_id(item):
+        data = item.data(0, Qt.ItemDataRole.UserRole) or ""
+        if data.startswith("__local__:"):
+            return data[10:]
+        return ""
+
     def _on_item_clicked(self, item: QTreeWidgetItem, col: int):
         if item.type() == TREE_ITEM_TYPE['GEO_SOLID']:
             entry_id = item.data(0, Qt.ItemDataRole.UserRole)
             if entry_id:
                 self.item_selected.emit(entry_id)
+        elif item.type() == TREE_ITEM_TYPE['GLOBAL_MATERIAL']:
+            mat_name = item.text(0)
+            self.item_selected.emit(f"__mat__:{mat_name}")
+        elif item.type() == TREE_ITEM_TYPE['LOCAL_MATERIAL']:
+            user_data = item.data(0, Qt.ItemDataRole.UserRole) or ""
+            self.item_selected.emit(user_data)
 
     def _on_item_changed(self, item: QTreeWidgetItem, col: int):
         if col != 0:
@@ -219,26 +283,6 @@ class ProjectTreeWidget(QWidget):
         for i in range(item.childCount()):
             self._emit_visibility_for_leaves(item.child(i), state)
 
-    def _on_context_menu(self, pos: QPoint):
-        item = self._tree.itemAt(pos)
-        if item is None:
-            return
-        menu = QMenu(self)
-        if item.type() == TREE_ITEM_TYPE['GEO_ROOT']:
-            act = menu.addAction("Import STEP File")
-            act.triggered.connect(self.import_step_requested.emit)
-            menu.addSeparator()
-            unfold = menu.addAction("Expand All")
-            unfold.triggered.connect(lambda: self._expand_all(item))
-            fold = menu.addAction("Collapse All")
-            fold.triggered.connect(lambda: self._collapse_all(item))
-        elif item.type() == TREE_ITEM_TYPE['GEO_SOLID']:
-            menu.addAction("Mesh")
-            menu.addAction("Mesh Preview")
-            menu.addSeparator()
-            menu.addAction("Export GDML")
-        menu.exec(self._tree.viewport().mapToGlobal(pos))
-
     def _expand_all(self, item: QTreeWidgetItem):
         item.setExpanded(True)
         for i in range(item.childCount()):
@@ -258,6 +302,24 @@ class ProjectTreeWidget(QWidget):
                 self._geometry_root, file_node.name, TREE_ITEM_TYPE['GEO_ROOT'])
             file_item.set_entry_id(file_node.entry_id)
             self._recursive_populate(file_item, file_node)
+
+        # Auto-expand: if total solid count ≤ 20, expand fully; otherwise fold solids
+        total_solids = self._count_solid_leaves(self._geometry_root)
+        if total_solids <= 20:
+            self._expand_all(self._geometry_root)
+        else:
+            self._geometry_root.setExpanded(True)
+
+    def _count_solid_leaves(self, item: QTreeWidgetItem) -> int:
+        """Recursively count GEO_SOLID leaf items under the given item."""
+        count = 0
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child.type() == TREE_ITEM_TYPE['GEO_SOLID'] and child.childCount() == 0:
+                count += 1
+            elif child.childCount() > 0:
+                count += self._count_solid_leaves(child)
+        return count
 
     def _recursive_populate(self, parent_item, parent_node: 'GDataNode'):
         for child in parent_node.children:

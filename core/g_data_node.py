@@ -21,6 +21,7 @@ class NodeType(Enum):
     ROOT_NODE = 1
     STEP_FILE = 2
     GEO_NODE = 3
+    GEO_FILE = 4  # Generic file node for non-STEP formats (IGES, BREP, STL)
 
 
 class GDataNode(QObject):

@@ -14,7 +14,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from OCC.Core.AIS import AIS_Shape
 
 from .g_data_node import GDataNode, NodeType
-from .step_reader import STEPReader
+from .cad_reader import CADReader
 
 
 class GeoDataAgent:
@@ -34,11 +34,11 @@ class GeoDataAgent:
         self._initialized = True
         self._root_node = GDataNode(NodeType.ROOT_NODE, "Geometry Root")
         self._entry_id_map: Dict[str, GDataNode] = {}
-        self._step_reader = STEPReader()
+        self._cad_reader = CADReader()
 
     def read_step_files(self, file_paths: List[str], error_info: List[str]) -> bool:
         try:
-            file_nodes = self._step_reader.read_files(file_paths, error_info)
+            file_nodes = self._cad_reader.read_files(file_paths, error_info)
             for file_node in file_nodes:
                 entry_id = self._generate_entry_id()
                 file_node.entry_id = entry_id
@@ -53,7 +53,8 @@ class GeoDataAgent:
             return False
 
     def get_all_geo_file_nodes(self) -> List[GDataNode]:
-        return [c for c in self._root_node.children if c.node_type == NodeType.STEP_FILE]
+        return [c for c in self._root_node.children
+                if c.node_type in (NodeType.STEP_FILE, NodeType.GEO_FILE)]
 
     def get_all_solid_nodes(self) -> List[GDataNode]:
         solids = []

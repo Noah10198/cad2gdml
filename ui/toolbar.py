@@ -1,8 +1,8 @@
 """
 RibbonToolBar - Office-style ribbon toolbar with emoji icons.
 
-Provides 6 action buttons arranged horizontally:
-  [Import STEP] [Mesh] [View Mesh] [Export GDML] [Export VTK] [Dark/Light] ... [Help]
+Provides 7 action buttons arranged horizontally:
+  [Import CAD] [Interference] [Material] [Mesh] [View Mesh] [Export GDML] [Export Mesh] [Dark/Light] ... [Help]
 
 Each button displays an emoji icon above with a text label below,
 mimicking the Microsoft Office Ribbon style.
@@ -50,10 +50,12 @@ class RibbonToolBar(QWidget):
     """
 
     import_step_clicked = pyqtSignal()
+    interference_clicked = pyqtSignal()
     mesh_clicked = pyqtSignal()
     view_mesh_clicked = pyqtSignal()
+    assign_material_clicked = pyqtSignal()
     export_gdml_clicked = pyqtSignal()
-    export_vtk_clicked = pyqtSignal()
+    export_mesh_clicked = pyqtSignal()
     theme_toggled = pyqtSignal()
     help_clicked = pyqtSignal()
 
@@ -72,11 +74,13 @@ class RibbonToolBar(QWidget):
 
         # Define button spec: (emoji, label, signal)
         buttons = [
-            ("📂", "Import STEP", self.import_step_clicked),
+            ("📂", "Import CAD", self.import_step_clicked),
+            ("⚡", "Interference", self.interference_clicked),
+            ("🧪", "Material", self.assign_material_clicked),
             ("🔧", "Mesh", self.mesh_clicked),
             ("👁", "View Mesh", self.view_mesh_clicked),
             ("📦", "Export GDML", self.export_gdml_clicked),
-            ("📤", "Export VTK", self.export_vtk_clicked),
+            ("📤", "Export Mesh", self.export_mesh_clicked),
         ]
 
         for emoji, label, signal in buttons:
