@@ -3,24 +3,36 @@ branches: {
   }
 fileChange:
   /core:
-    newFile: !uuid '94fdc85b7518bd73d8a1e7796ef8517893dea10a'
-    oldFile: !uuid 'ad183cd105f09ad9dd403163580df95e94c9ba6e'
-  /core/step_reader.py:
-    newFile: null
-    oldFile: !uuid 'b103faf18d513bf7d4e3583e4f1c8eddea5e6527'
-  /doc:
-    newFile: !uuid 'adf6fda9b2d664c9943c4ffecbdb5785ffa6ed04'
+    newFile: !uuid '23a71e781e8dd6018c2c01c467fbc6fd2267bd1d'
+    oldFile: !uuid '94fdc85b7518bd73d8a1e7796ef8517893dea10a'
+  /core/cad_reader.py:
+    newFile: !uuid 'f5d179233e010b2e40d5723818e988c7ad61477c'
     oldFile: null
-  /doc/interference1_algorithm.md:
-    newFile: !uuid 'e3bb7513c978a9a0855e9f5637cf9a9a2cfc632b'
+  /data:
+    newFile: !uuid '6a836026802ecfa9287a2888ff97dc0401d29a5d'
     oldFile: null
-  /doc/interference2_algorithm.md:
-    newFile: !uuid '23d34c6783e6d972a653826bf99a820c0e4e5727'
+  /data/element.xml:
+    newFile: !uuid '9614908610eb77542730865dd339cc1365b86ba2'
     oldFile: null
-  /doc/interference_dialog.md:
-    newFile: !uuid '80cf974a923bf320ee6f0c3be47113ccc0cfd931'
+  /data/nist.txt:
+    newFile: !uuid '8065f67b077c3c5212ba1afb5d14b472073f65bc'
     oldFile: null
-gitCommitId: !uuid '8f5ed222bdf0ec0ffd710924f89be52d141a09f6'
+  /ui:
+    newFile: !uuid '7c196ae3361661336ed48c3c1963f6d06d10330d'
+    oldFile: !uuid 'a52aebeaa3de835119e75763de63782813e34ac3'
+  /ui/assign_material_dialog.py:
+    newFile: !uuid '4b6fdeeee8a9b4e01fa5e0edc7f4c2cc8f1ac310'
+    oldFile: null
+  /ui/export_mesh_dialog.py:
+    newFile: !uuid 'bb89ab0154675fd96407efdbbf4c2aa893a47161'
+    oldFile: null
+  /ui/interference_dialog.py:
+    newFile: !uuid 'e81616da20158331a83b777e7e2373de97197030'
+    oldFile: null
+  /ui/local_material_dialog.py:
+    newFile: !uuid '95724f0e88c224b83fe2b6940f5c0cb965aea801'
+    oldFile: null
+gitCommitId: !uuid '87bf21bcb1181d69d1618f7bce185179b396c541'
 renames: {
   }
-revisionId: 7
+revisionId: 8
