@@ -46,12 +46,20 @@ class MainWindow(QMainWindow):
         # Mesh state
         self._mesh_runner: Optional[MeshRunner] = None
         self._mesh_progress_dlg: Optional[MeshProgressDialog] = None
-        self._mesh_viewer: Optional[MeshViewer] = None
         self._meshed_nodes: dict = {}  # entry_id -> vtk_path
         self._mesh_work_dir: str = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "_mesh_temp"
         )
+        # Persist last mesh parameters across dialog invocations
+        self._last_mesh_params: dict = {
+            "algorithm": "Frontal-Delaunay",
+            "elem_factor": 1.0,
+            "mesh_min_factor": 5.0,
+            "mesh_max_factor": 6.0,
+            "smoothing": 1,
+            "element_order": 1,
+        }
 
         # Build UI before theme
         self._init_toolbar()
@@ -312,11 +320,21 @@ class MainWindow(QMainWindow):
                                     "Import a STEP file before meshing.")
             return
 
-        # Show parameter dialog
-        dlg = GmshDialog(self)
+        # Show parameter dialog (pre-populated with last used values)
+        dlg = GmshDialog(self, initial_params=self._last_mesh_params)
         if dlg.exec() != GmshDialog.DialogCode.Accepted:
             self._logger.log_system("Meshing cancelled by user.")
             return
+
+        # Save params for next time
+        self._last_mesh_params = {
+            "algorithm": dlg.algorithm,
+            "elem_factor": dlg.element_size_factor,
+            "mesh_min_factor": dlg.mesh_min_factor,
+            "mesh_max_factor": dlg.mesh_max_factor,
+            "smoothing": dlg.smoothing_steps,
+            "element_order": dlg.element_order,
+        }
 
         params = dlg.get_descriptive_summary()
         self._logger.log_system(f"Mesh parameters: {params}")
@@ -366,26 +384,17 @@ class MainWindow(QMainWindow):
         self._mesh_runner.start()
 
     def _slot_view_mesh(self):
-        """Open a fresh non-blocking VTK mesh viewer window."""
+        """Open a new mesh preview window each time (allows side-by-side
+        comparison of different mesh parameter sets)."""
         if not self._meshed_nodes:
             self._logger.log_system("No mesh data to view. Run meshing first.")
             QMessageBox.information(self, "No Mesh",
                                     "Generate a mesh before viewing.")
             return
 
-        # Destroy previous viewer to avoid stale OpenGL context
-        if self._mesh_viewer is not None:
-            try:
-                self._mesh_viewer.close()
-            except Exception:
-                pass
-            self._mesh_viewer.deleteLater()
-            self._mesh_viewer = None
-
-        self._mesh_viewer = MeshViewer()
-        self._mesh_viewer.show()
-        self._mesh_viewer.raise_()
-        self._mesh_viewer.load_mesh(self._meshed_nodes)
+        viewer = MeshViewer()
+        viewer.load_mesh(self._meshed_nodes, mesh_params=self._last_mesh_params)
+        viewer.show()
         self._logger.log_system(
             f"Mesh preview opened: {len(self._meshed_nodes)} meshed part(s)."
         )

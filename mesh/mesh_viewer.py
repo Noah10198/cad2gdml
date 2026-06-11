@@ -1,34 +1,36 @@
 """
 MeshViewer - Standalone, non-blocking 3D mesh preview window with
-clipping plane (B), collision detection (C), and distance map (D).
+clipping plane (B), Interference1 (C), Interference2 (E), and distance map (D).
 
 Uses QVTKRenderWindowInteractor (QOpenGLWidget) for proper OpenGL context.
 """
 
 import os
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Set
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QComboBox, QSlider, QWidget, QButtonGroup,
+    QComboBox, QSlider, QWidget, QButtonGroup, QProgressDialog, QApplication,
 )
 from PyQt6.QtCore import Qt
 
 # ---- VTK imports ----
 from vtkmodules.vtkIOLegacy import vtkUnstructuredGridReader
 from vtkmodules.vtkFiltersCore import (
-    vtkPolyDataNormals, vtkImplicitPolyDataDistance,
+    vtkPolyDataNormals, vtkImplicitPolyDataDistance, vtkClipPolyData,
+    vtkTriangleFilter, vtkDecimatePro,
 )
+from vtkmodules.vtkFiltersGeneral import vtkIntersectionPolyDataFilter
 from vtkmodules.vtkFiltersGeometry import vtkGeometryFilter
 from vtkmodules.vtkRenderingCore import (
     vtkActor, vtkPolyDataMapper, vtkRenderer,
 )
 from vtkmodules.vtkRenderingAnnotation import (
-    vtkCubeAxesActor, vtkScalarBarActor,
+    vtkCubeAxesActor, vtkScalarBarActor, vtkCornerAnnotation,
 )
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
-from vtkmodules.vtkCommonDataModel import vtkPlane, vtkPolyData, vtkCellArray
-from vtkmodules.vtkCommonCore import vtkLookupTable, vtkDoubleArray, vtkObject, vtkPoints
+from vtkmodules.vtkCommonDataModel import vtkPlane, vtkPolyData
+from vtkmodules.vtkCommonCore import vtkLookupTable, vtkDoubleArray, vtkObject
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 import vtkmodules.vtkRenderingOpenGL2
 import vtkmodules.vtkInteractionStyle
@@ -75,9 +77,20 @@ class MeshViewer(QDialog):
         self._clip_plane.SetNormal(1, 0, 0)
         self._clip_bounds = None
 
-        # ---- C. Collision state ----
+        # ---- C. Collision state (Interference1) ----
         self._collision_actors: List[vtkActor] = []
         self._collision_tol = 0.0  # set during mesh load
+
+        # ---- Mesh parameters overlay ----
+        self._mesh_params: Optional[dict] = None
+        self._params_annotation: Optional[vtkCornerAnnotation] = None
+
+        # ---- E. Interference2 state (IntersectionPolyDataFilter-based) ----
+        self._i2_actors: List[vtkActor] = []
+        self._btn_i2: Optional[QPushButton] = None
+        self._i2_collided: Set[int] = set()        # indices of meshes with intersection
+        # Cancel flag for interruptible computation
+        self._i2_cancel_flag = False
 
         # ---- D. Distance map state ----
         self._distance_mode = False
@@ -128,10 +141,18 @@ class MeshViewer(QDialog):
         toolbar.addWidget(self._btn_clip)
 
         # C
-        self._btn_collide = QPushButton("⚡ Interference")
-        self._btn_collide.setToolTip("Detect mesh penetration / interference")
+        self._btn_collide = QPushButton("⚡ Interference1")
+        self._btn_collide.setCheckable(True)
+        self._btn_collide.setToolTip("Toggle Interference1: clip-based overlap region extraction")
         self._btn_collide.clicked.connect(self._run_collision_detection)
         toolbar.addWidget(self._btn_collide)
+
+        # E — Interference2 (SelectEnclosedPoints)
+        self._btn_i2 = QPushButton("⚡ Interference2")
+        self._btn_i2.setCheckable(True)
+        self._btn_i2.setToolTip("Toggle Interference2: detect mesh penetration via SelectEnclosedPoints")
+        self._btn_i2.clicked.connect(self._run_interference2)
+        toolbar.addWidget(self._btn_i2)
 
         # D
         self._btn_distance = QPushButton("🌈 Distance")
@@ -251,19 +272,59 @@ class MeshViewer(QDialog):
         self._vtk_widget.Initialize()
         self._vtk_widget.Start()
 
+        # ---- Mesh params corner annotation ----
+        self._params_annotation = vtkCornerAnnotation()
+        self._params_annotation.SetText(2, "Mesh Parameters:\n  <none>")
+        self._params_annotation.SetMaximumFontSize(14)
+        self._params_annotation.GetTextProperty().SetColor(0.9, 0.9, 0.9)
+        self._params_annotation.GetTextProperty().SetBackgroundColor(0.1, 0.1, 0.15)
+        self._params_annotation.GetTextProperty().SetBackgroundOpacity(0.7)
+        self._params_annotation.GetTextProperty().SetFrame(False)
+        self._renderer.AddActor(self._params_annotation)
+
     # ================================================================
     #  Public API
     # ================================================================
 
-    def load_mesh(self, mesh_paths: Dict[str, str]):
+    def load_mesh(self, mesh_paths: Dict[str, str],
+                  mesh_params: Optional[dict] = None):
         self._mesh_paths = list(mesh_paths.values())
         self._mesh_names = list(mesh_paths.keys())
+        if mesh_params is not None:
+            self._mesh_params = mesh_params
+        self._update_params_text()
         self._render_mesh_multi()
 
     def load_mesh_files(self, file_paths: List[str]):
         self._mesh_paths = file_paths
         self._mesh_names = [os.path.basename(p) for p in file_paths]
         self._render_mesh_multi()
+
+    def _update_params_text(self):
+        """Refresh the corner-annotation overlay from self._mesh_params."""
+        if self._params_annotation is None:
+            return
+        if self._mesh_params is None:
+            self._params_annotation.SetText(2, "")
+            return
+
+        p = self._mesh_params
+        alg = p.get("algorithm", "?")
+        elem = p.get("elem_factor", "?")
+        mn = p.get("mesh_min_factor", "?")
+        mx = p.get("mesh_max_factor", "?")
+        smooth = p.get("smoothing", "?")
+        order = p.get("element_order", "?")
+
+        lines = [
+            "Gmsh Parameters",
+            f"  Algorithm: {alg}",
+            f"  Order: {order}  |  Smooth: {smooth}",
+            f"  Elem Factor: {elem}",
+            f"  Min/Max: {mn} / {mx}",
+        ]
+        self._params_annotation.SetText(2, "\n".join(lines))
+        self._render_window.Render()
 
     # ================================================================
     #  Rendering — one actor per mesh
@@ -274,6 +335,8 @@ class MeshViewer(QDialog):
             self._renderer.RemoveActor(a)
         for a in self._collision_actors:
             self._renderer.RemoveActor(a)
+        for a in self._i2_actors:
+            self._renderer.RemoveActor(a)
         if self._scalar_bar:
             self._renderer.RemoveActor(self._scalar_bar)
             self._scalar_bar = None
@@ -283,10 +346,14 @@ class MeshViewer(QDialog):
         self._mesh_actors.clear()
         self._mesh_polydata.clear()
         self._collision_actors.clear()
+        self._i2_actors.clear()
+        self._i2_collided.clear()
         self._collision_panel.setVisible(False)
         self._clip_panel.setVisible(False)
         self._clip_active = False
         self._btn_clip.setChecked(False)
+        self._btn_collide.setChecked(False)
+        self._btn_i2.setChecked(False)
         self._distance_mode = False
         self._btn_distance.setChecked(False)
         self._transparent = False
@@ -298,7 +365,7 @@ class MeshViewer(QDialog):
         actor = vtkActor()
         actor.SetMapper(mapper)
         p = actor.GetProperty()
-        p.SetColor(0.9, 0.6, 0.15)
+        p.SetColor(0.35, 0.65, 0.80)   # cool slate-blue — contrasts with red occlusion
         p.SetEdgeColor(0.1, 0.1, 0.1)
         p.SetEdgeVisibility(True)
         p.SetLineWidth(1.0)
@@ -452,14 +519,24 @@ class MeshViewer(QDialog):
         self._clip_slider.setValue(val)
 
     # ================================================================
-    #  C — Collision Detection
+    #  C — Interference1 (Clip-based Overlap Extraction)
     # ================================================================
 
     def _run_collision_detection(self):
+        # --- Toggle OFF: clear effects ---
+        if not self._btn_collide.isChecked():
+            for a in self._collision_actors:
+                self._renderer.RemoveActor(a)
+            self._collision_actors.clear()
+            # Restore mesh opacity if it was auto-enabled
+            if self._transparent:
+                self._toggle_transparency()
+            self._render_window.Render()
+            return
+
         n = len(self._mesh_polydata)
         if n < 2:
-            self._collision_label.setText("Need >= 2 meshes")
-            self._collision_panel.setVisible(True)
+            self._btn_collide.setChecked(False)
             return
 
         self._btn_collide.setEnabled(False)
@@ -471,82 +548,257 @@ class MeshViewer(QDialog):
 
         vtkObject.GlobalWarningDisplayOff()
 
-        tol = self._collision_tol
-        overlap_count = 0
-        details = []
-        total_pairs = n * (n - 1) // 2
+        # Auto-enable transparency to see overlap inside
+        if not self._transparent:
+            self._toggle_transparency()
 
+        # Spatial pre-filter: only check pairs whose bounding boxes overlap.
+        # For typical CAD assemblies (n < 20 parts), this O(n²) loop with
+        # AABB early reject is fast enough. For very large assemblies a
+        # spatial hash / BVH could be added, but AABB covers the common case.
         for i in range(n):
             poly_i = self._mesh_polydata[i]
-            n_i = poly_i.GetNumberOfPoints()
             for j in range(i + 1, n):
                 poly_j = self._mesh_polydata[j]
 
-                # Stage 1: AABB overlap check (fast filter)
+                # AABB overlap → parts are close enough in space
                 b_i = poly_i.GetBounds()
                 b_j = poly_j.GetBounds()
-                aabb_overlap = (
-                    b_i[0] <= b_j[1] and b_i[1] >= b_j[0] and
-                    b_i[2] <= b_j[3] and b_i[3] >= b_j[2] and
-                    b_i[4] <= b_j[5] and b_i[5] >= b_j[4]
-                )
-                if not aabb_overlap:
+                if not (b_i[0] <= b_j[1] and b_i[1] >= b_j[0] and
+                        b_i[2] <= b_j[3] and b_i[3] >= b_j[2] and
+                        b_i[4] <= b_j[5] and b_i[5] >= b_j[4]):
                     continue
 
-                # Stage 2: Signed distance penetration check (O(N) per mesh)
+                # Clip mesh i with mesh j's signed distance → overlap patch
                 imp_ij = vtkImplicitPolyDataDistance()
                 imp_ij.SetInput(poly_j)
 
-                inside_pts = vtkPoints()
-                for k in range(n_i):
-                    pt = poly_i.GetPoint(k)
-                    d = imp_ij.EvaluateFunction(pt)
-                    if d < -tol:  # significantly inside → interference
-                        inside_pts.InsertNextPoint(pt)
+                clipper_ij = vtkClipPolyData()
+                clipper_ij.SetInputData(poly_i)
+                clipper_ij.SetClipFunction(imp_ij)
+                clipper_ij.InsideOutOn()
+                clipper_ij.SetValue(0.0)
+                clipper_ij.Update()
+                overlap_ij = clipper_ij.GetOutput()
 
+                # Clip mesh j with mesh i's signed distance
                 imp_ji = vtkImplicitPolyDataDistance()
                 imp_ji.SetInput(poly_i)
 
-                n_j = poly_j.GetNumberOfPoints()
-                for k in range(n_j):
-                    pt = poly_j.GetPoint(k)
-                    d = imp_ji.EvaluateFunction(pt)
-                    if d < -tol:
-                        inside_pts.InsertNextPoint(pt)
+                clipper_ji = vtkClipPolyData()
+                clipper_ji.SetInputData(poly_j)
+                clipper_ji.SetClipFunction(imp_ji)
+                clipper_ji.InsideOutOn()
+                clipper_ji.SetValue(0.0)
+                clipper_ji.Update()
+                overlap_ji = clipper_ji.GetOutput()
 
-                n_inside = inside_pts.GetNumberOfPoints()
-                if n_inside > 0:
-                    # Visualize interfering points as red dots
-                    cells = vtkCellArray()
-                    for k in range(n_inside):
-                        cells.InsertNextCell(1)
-                        cells.InsertCellPoint(k)
+                n_cells_ij = overlap_ij.GetNumberOfCells()
+                n_cells_ji = overlap_ji.GetNumberOfCells()
 
-                    inside_poly = vtkPolyData()
-                    inside_poly.SetPoints(inside_pts)
-                    inside_poly.SetVerts(cells)
+                # --- Visualize overlapping region(s) in bright red ---
+                for clip_result in [overlap_ij, overlap_ji]:
+                    if clip_result.GetNumberOfCells() == 0:
+                        continue
 
                     mapper = vtkPolyDataMapper()
-                    mapper.SetInputData(inside_poly)
+                    mapper.SetInputData(clip_result)
                     mapper.ScalarVisibilityOff()
 
                     actor = vtkActor()
                     actor.SetMapper(mapper)
                     pp = actor.GetProperty()
-                    pp.SetColor(1.0, 0.15, 0.15)
-                    pp.SetPointSize(6.0)
-                    pp.SetOpacity(0.85)
-
-                    ni = self._mesh_names[i][:12] if i < len(self._mesh_names) else f"#{i}"
-                    nj = self._mesh_names[j][:12] if j < len(self._mesh_names) else f"#{j}"
+                    pp.SetColor(1.0, 0.15, 0.15)   # bright red — distinct from slate-blue mesh
+                    pp.SetOpacity(0.70)
+                    pp.SetEdgeVisibility(True)
+                    pp.SetEdgeColor(1.0, 0.5, 0.5)
+                    pp.SetLineWidth(1.5)
 
                     self._collision_actors.append(actor)
                     self._renderer.AddActor(actor)
-                    overlap_count += 1
-                    details.append(f"  {ni} ↔ {nj}  ({n_inside} interfering pt(s))")
 
+        self._btn_collide.setEnabled(True)
+        self._btn_collide.setText("⚡ Interference1")
+        vtkObject.GlobalWarningDisplayOn()
+        self._render_window.Render()
+
+    # ================================================================
+    #  E — Interference2 (IntersectionPolyDataFilter-based)
+    # ================================================================
+
+    def _restore_mesh_colors(self):
+        """Restore mesh actors to their original (non-interference) colors."""
+        for i, a in enumerate(self._mesh_actors):
+            oc = self._original_colors.get(i, (0.35, 0.65, 0.80))
+            a.GetProperty().SetColor(oc)
+
+    def _run_interference2(self):
+        # --- Toggle OFF: clear effects ---
+        if not self._btn_i2.isChecked():
+            for a in self._i2_actors:
+                self._renderer.RemoveActor(a)
+            self._i2_actors.clear()
+            self._restore_mesh_colors()
+            self._i2_collided.clear()
+            self._collision_panel.setVisible(False)
+            if self._transparent:
+                self._toggle_transparency()
+            self._render_window.Render()
+            return
+
+        n = len(self._mesh_polydata)
+        if n < 2:
+            self._btn_i2.setChecked(False)
+            return
+
+        self._btn_i2.setEnabled(False)
+        self._btn_i2.setText("⚡ Computing...")
+
+        # Clean slate
+        for a in self._i2_actors:
+            self._renderer.RemoveActor(a)
+        self._i2_actors.clear()
+        self._restore_mesh_colors()
+        self._i2_collided.clear()
+
+        # Transparency helps see intersection lines through parts
+        if not self._transparent:
+            self._toggle_transparency()
+
+        vtkObject.GlobalWarningDisplayOff()
+
+        # ── Progress dialog ──
+        total_pairs = n * (n - 1) // 2
+        progress = QProgressDialog(
+            "Checking surface intersections...", "Cancel", 0, total_pairs, self
+        )
+        progress.setWindowTitle("Interference2")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        self._i2_cancel_flag = False
+        progress.canceled.connect(lambda: setattr(self, '_i2_cancel_flag', True))
+        progress.show()
+        QApplication.processEvents()
+
+        cancelled = False
+        step = 0
+        overlap_count = 0
+        details = []
+
+        try:
+            for i in range(n):
+                if cancelled:
+                    break
+                poly_i = self._mesh_polydata[i]
+                ni = self._mesh_names[i][:12] if i < len(self._mesh_names) else f"#{i}"
+
+                for j in range(i + 1, n):
+                    poly_j = self._mesh_polydata[j]
+                    nj = self._mesh_names[j][:12] if j < len(self._mesh_names) else f"#{j}"
+                    step += 1
+                    progress.setValue(step)
+                    progress.setLabelText(f"{ni} ↔ {nj}")
+                    QApplication.processEvents()
+
+                    if self._i2_cancel_flag:
+                        cancelled = True
+                        break
+
+                    # AABB pre-filter
+                    b_i = poly_i.GetBounds()
+                    b_j = poly_j.GetBounds()
+                    if not (b_i[0] <= b_j[1] and b_i[1] >= b_j[0] and
+                            b_i[2] <= b_j[3] and b_i[3] >= b_j[2] and
+                            b_i[4] <= b_j[5] and b_i[5] >= b_j[4]):
+                        continue
+
+                    # ── Decimate + IntersectionPolyDataFilter ──
+                    try:
+                        # Decimate both to ~5% of original triangles for speed and
+                        # to eliminate degenerate STEP triangles
+                        dec_i = vtkDecimatePro()
+                        dec_i.SetInputData(poly_i)
+                        dec_i.SetTargetReduction(0.95)
+                        dec_i.SetPreserveTopology(True)
+                        dec_i.Update()
+
+                        dec_j = vtkDecimatePro()
+                        dec_j.SetInputData(poly_j)
+                        dec_j.SetTargetReduction(0.95)
+                        dec_j.SetPreserveTopology(True)
+                        dec_j.Update()
+
+                        # Exact surface-surface intersection on decimated meshes
+                        intersect = vtkIntersectionPolyDataFilter()
+                        intersect.SetInputData(0, dec_i.GetOutput())
+                        intersect.SetInputData(1, dec_j.GetOutput())
+                        intersect.Update()
+
+                        lines = intersect.GetOutput()
+                        n_cells = lines.GetNumberOfCells()
+
+                        if n_cells > 0:
+                            self._i2_collided.add(i)
+                            self._i2_collided.add(j)
+
+                            # Draw intersection lines as red curves
+                            mapper = vtkPolyDataMapper()
+                            mapper.SetInputData(lines)
+                            mapper.ScalarVisibilityOff()
+
+                            actor = vtkActor()
+                            actor.SetMapper(mapper)
+                            pp = actor.GetProperty()
+                            pp.SetColor(1.0, 0.0, 0.0)
+                            pp.SetLineWidth(2.5)
+
+                            self._i2_actors.append(actor)
+                            self._renderer.AddActor(actor)
+
+                            overlap_count += 1
+                            details.append(
+                                f"  {ni} ↔ {nj}  ({n_cells} inter cells)"
+                            )
+                            print(
+                                f"[I2]  {ni} ↔ {nj}  "
+                                f"{n_cells} intersection cells"
+                            )
+
+                    except Exception as e:
+                        details.append(f"  {ni} ↔ {nj}  error: {str(e)[:60]}")
+                        print(f"[I2]  {ni} ↔ {nj}  exception: {e}")
+
+                    QApplication.processEvents()
+
+                if cancelled:
+                    break
+
+        finally:
+            progress.close()
+
+        # Cancel → restore everything
+        if cancelled:
+            for a in self._i2_actors:
+                self._renderer.RemoveActor(a)
+            self._i2_actors.clear()
+            self._restore_mesh_colors()
+            self._i2_collided.clear()
+            self._btn_i2.setEnabled(True)
+            self._btn_i2.setText("⚡ Interference2")
+            self._btn_i2.setChecked(False)
+            vtkObject.GlobalWarningDisplayOn()
+            self._render_window.Render()
+            return
+
+        # ── Highlight collided meshes in red ──
+        for idx in self._i2_collided:
+            if idx < len(self._mesh_actors):
+                self._mesh_actors[idx].GetProperty().SetColor(1.0, 0.2, 0.2)
+
+        # ---- Update report panel ----
         if overlap_count > 0:
-            txt = f"{overlap_count} interference(s)"
+            txt = f"Interference2: {overlap_count} pair(s)"
             for d in details:
                 txt += "\n" + d
             self._collision_label.setText(txt)
@@ -554,19 +806,31 @@ class MeshViewer(QDialog):
             self._btn_coll_viz.setChecked(True)
             self._btn_coll_viz.setText("✕ Hide")
         else:
-            self._collision_label.setText(f"No interference — {total_pairs} pairs ✓")
+            self._collision_label.setText(
+                f"Interference2: No intersections — {total_pairs} pairs ✓"
+            )
             self._collision_label.setStyleSheet("font-weight: bold; color: #a6e3a1;")
 
         self._collision_panel.setVisible(True)
-        self._btn_collide.setEnabled(True)
-        self._btn_collide.setText("⚡ Interference")
+        self._btn_i2.setEnabled(True)
+        self._btn_i2.setText("⚡ Interference2")
         vtkObject.GlobalWarningDisplayOn()
         self._render_window.Render()
 
     def _toggle_collision_visibility(self):
         vis = self._btn_coll_viz.isChecked()
+        # Interference1: toggle overlap actors
         for a in self._collision_actors:
             a.SetVisibility(vis)
+        # Interference2: toggle intersection line actors + mesh colors
+        for a in self._i2_actors:
+            a.SetVisibility(vis)
+        if vis:
+            for idx in self._i2_collided:
+                if idx < len(self._mesh_actors):
+                    self._mesh_actors[idx].GetProperty().SetColor(1.0, 0.2, 0.2)
+        else:
+            self._restore_mesh_colors()
         self._btn_coll_viz.setText("✕ Hide" if vis else "◉ Show")
         self._render_window.Render()
 
@@ -679,7 +943,7 @@ class MeshViewer(QDialog):
             mapper.SetInputData(self._mesh_polydata[i])
             mapper.ScalarVisibilityOff()
             actor.SetMapper(mapper)
-            oc = self._original_colors.get(i, (0.9, 0.6, 0.15))
+            oc = self._original_colors.get(i, (0.35, 0.65, 0.80))
             actor.GetProperty().SetColor(oc)
             actor.GetProperty().SetEdgeVisibility(self._show_edges)
 
@@ -695,7 +959,7 @@ class MeshViewer(QDialog):
             p = a.GetProperty()
             if self._transparent:
                 p.SetOpacity(0.45)
-                p.SetEdgeColor(0.8, 0.4, 0.1)
+                p.SetEdgeColor(0.5, 0.8, 0.9)   # light cyan edges — visible through transparency
             else:
                 p.SetOpacity(1.0)
                 p.SetEdgeColor(0.1, 0.1, 0.1)

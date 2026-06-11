@@ -26,14 +26,15 @@ class GmshDialog(QDialog):
         "Frontal-Delaunay": 6,
     }
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None,
+                 initial_params: Optional[dict] = None):
         super().__init__(parent)
         self.setWindowTitle("Mesh Generation Parameters")
         self.setMinimumWidth(380)
         self.setModal(True)
-        self._build_ui()
+        self._build_ui(initial_params)
 
-    def _build_ui(self):
+    def _build_ui(self, initial_params: Optional[dict] = None):
         layout = QVBoxLayout(self)
 
         # Title
@@ -49,7 +50,8 @@ class GmshDialog(QDialog):
         self._algo_combo = QComboBox()
         for name in self.ALGORITHMS:
             self._algo_combo.addItem(name)
-        self._algo_combo.setCurrentText("Frontal-Delaunay")
+        algo_default = initial_params.get("algorithm", "Frontal-Delaunay") if initial_params else "Frontal-Delaunay"
+        self._algo_combo.setCurrentText(algo_default)
         self._algo_combo.setToolTip(
             "MeshAdapt=1, Automatic=2, Delaunay=5, Frontal-Delaunay=6"
         )
@@ -58,7 +60,7 @@ class GmshDialog(QDialog):
         # Element size factor
         self._elem_factor_spin = QDoubleSpinBox()
         self._elem_factor_spin.setRange(0.01, 999999.0)
-        self._elem_factor_spin.setValue(1.0)
+        self._elem_factor_spin.setValue(initial_params.get("elem_factor", 1.0) if initial_params else 1.0)
         self._elem_factor_spin.setSingleStep(0.1)
         self._elem_factor_spin.setDecimals(2)
         form.addRow("Element Size Factor:", self._elem_factor_spin)
@@ -66,7 +68,7 @@ class GmshDialog(QDialog):
         # Mesh min factor (used to compute MeshSizeMin)
         self._min_factor_spin = QDoubleSpinBox()
         self._min_factor_spin.setRange(0.01, 999999.0)
-        self._min_factor_spin.setValue(5.0)
+        self._min_factor_spin.setValue(initial_params.get("mesh_min_factor", 5.0) if initial_params else 5.0)
         self._min_factor_spin.setSingleStep(0.5)
         self._min_factor_spin.setDecimals(2)
         form.addRow("Mesh Min Factor:", self._min_factor_spin)
@@ -74,7 +76,7 @@ class GmshDialog(QDialog):
         # Mesh max factor (used to compute MeshSizeMax)
         self._max_factor_spin = QDoubleSpinBox()
         self._max_factor_spin.setRange(0.01, 999999.0)
-        self._max_factor_spin.setValue(6.0)
+        self._max_factor_spin.setValue(initial_params.get("mesh_max_factor", 6.0) if initial_params else 6.0)
         self._max_factor_spin.setSingleStep(0.5)
         self._max_factor_spin.setDecimals(2)
         form.addRow("Mesh Max Factor:", self._max_factor_spin)
@@ -82,13 +84,15 @@ class GmshDialog(QDialog):
         # Smoothing steps
         self._smoothing_spin = QSpinBox()
         self._smoothing_spin.setRange(0, 100)
-        self._smoothing_spin.setValue(1)
+        self._smoothing_spin.setValue(initial_params.get("smoothing", 1) if initial_params else 1)
         form.addRow("Smoothing Steps:", self._smoothing_spin)
 
         # Element order
         self._order_combo = QComboBox()
         self._order_combo.addItem("1st Order", 1)
         self._order_combo.addItem("2nd Order", 2)
+        order_val = initial_params.get("element_order", 1) if initial_params else 1
+        self._order_combo.setCurrentIndex(order_val - 1)
         form.addRow("Element Order:", self._order_combo)
 
         layout.addLayout(form)

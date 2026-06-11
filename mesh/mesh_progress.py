@@ -95,8 +95,13 @@ class MeshProgressDialog(QDialog):
             )
 
     def set_view_mesh_callback(self, callback):
-        """Connect the View Mesh button to a callback function."""
+        """Connect the View Mesh button to a callback function,
+        first disconnecting any previous connection to avoid duplicates."""
         if self._view_mesh_btn:
+            try:
+                self._view_mesh_btn.clicked.disconnect()
+            except (TypeError, RuntimeError):
+                pass
             self._view_mesh_btn.clicked.connect(callback)
 
     def reset(self):
