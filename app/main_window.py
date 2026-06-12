@@ -28,6 +28,7 @@ from mesh.gmsh_dialog import GmshDialog
 from mesh.mesh_runner import MeshRunner
 from mesh.mesh_progress import MeshProgressDialog
 from mesh.mesh_viewer import MeshViewer
+from ui.export_gdml_dialog import ExportGdmlDialog
 
 
 class MainWindow(QMainWindow):
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
 
         # Non-modal dialog refs
         self._assign_material_dlg = None
+        self._export_gdml_dlg = None
 
         # Mesh state
         self._mesh_runner: Optional[MeshRunner] = None
@@ -473,7 +475,76 @@ class MainWindow(QMainWindow):
 
 
     def _slot_export_gdml(self):
-        self._logger.log_system("GDML export requested (not yet implemented)")
+        """Open the non-modal GDML export dialog with precondition checks."""
+        solid_nodes = self._geo_agent.get_all_solid_nodes()
+        if not solid_nodes:
+            self._logger.log_system("No geometry loaded — nothing to export.")
+            return
+
+        # Check 1: all parts must have a material assigned
+        unmaterialized = [
+            n.name or n.entry_id for n in solid_nodes
+            if not n.material_name or not n.material_name.strip()
+        ]
+        if unmaterialized:
+            names = "; ".join(unmaterialized[:5])
+            if len(unmaterialized) > 5:
+                names += f" … and {len(unmaterialized) - 5} more"
+            self._logger.log_system(
+                f"GDML export blocked — {len(unmaterialized)} part(s) missing material: {names}",
+                level=LogLevel.WARNING)
+            QMessageBox.warning(
+                self, "Materials Not Assigned",
+                f"{len(unmaterialized)} part(s) have no material assignment.\n\n"
+                f"Missing: {names}\n\n"
+                "Please assign materials via the Material button first.")
+            return
+
+        # Check 2: all parts must have mesh data
+        unmeshed = [
+            n.name or n.entry_id for n in solid_nodes
+            if n.entry_id not in self._meshed_nodes
+               or not os.path.isfile(self._meshed_nodes.get(n.entry_id, ""))
+        ]
+        if unmeshed:
+            names = "; ".join(unmeshed[:5])
+            if len(unmeshed) > 5:
+                names += f" … and {len(unmeshed) - 5} more"
+            self._logger.log_system(
+                f"GDML export blocked — {len(unmeshed)} part(s) not yet meshed: {names}",
+                level=LogLevel.WARNING)
+            QMessageBox.warning(
+                self, "Parts Not Meshed",
+                f"{len(unmeshed)} part(s) have no mesh data.\n\n"
+                f"Missing: {names}\n\n"
+                "Please run meshing first.")
+            return
+
+        # Check 3: meshing still in progress
+        if self._mesh_runner is not None:
+            self._logger.log_system(
+                "Meshing is still in progress. Please wait.",
+                level=LogLevel.WARNING)
+            QMessageBox.information(
+                self, "Meshing In Progress",
+                "Meshing is still running.\n"
+                "Please wait for it to finish, then try again.")
+            return
+
+        if self._export_gdml_dlg is None or not self._export_gdml_dlg.isVisible():
+            self._export_gdml_dlg = ExportGdmlDialog(
+                solid_nodes=solid_nodes,
+                meshed_nodes=self._meshed_nodes,
+                mat_lib=self._library,
+                export_root=self._output_dir,
+                parent=self,
+            )
+            self._export_gdml_dlg.show()
+        else:
+            self._export_gdml_dlg.raise_()
+            self._export_gdml_dlg.activateWindow()
+
+        self._logger.log_system("GDML export dialog opened.")
 
     def _slot_export_mesh(self):
         """Open export dialog and save mesh files to user-chosen folder."""
