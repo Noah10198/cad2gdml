@@ -2,37 +2,19 @@
 branches: {
   }
 fileChange:
+  /app:
+    newFile: !uuid '773d97582843d8d6d0aa61575bd90702fbc603bd'
+    oldFile: !uuid 'c305424e673bd46281650160de07afbf76b2a2e4'
+  /app/main_window.py:
+    newFile: !uuid '7ba360a3da823a7b8cc96c39debd672db5a53b72'
+    oldFile: !uuid '3adca570474c865672c2aaae433d779bebe5dfd7'
   /core:
-    newFile: !uuid '23a71e781e8dd6018c2c01c467fbc6fd2267bd1d'
-    oldFile: !uuid '94fdc85b7518bd73d8a1e7796ef8517893dea10a'
-  /core/cad_reader.py:
-    newFile: !uuid 'f5d179233e010b2e40d5723818e988c7ad61477c'
+    newFile: !uuid '0c0e560d8e2b071593fcc1fe682ac0e498b48b26'
+    oldFile: !uuid '23a71e781e8dd6018c2c01c467fbc6fd2267bd1d'
+  /core/gdml_generator.py:
+    newFile: !uuid '3c58e6288383c230e7f42bdb200e249f6695ca16'
     oldFile: null
-  /data:
-    newFile: !uuid '6a836026802ecfa9287a2888ff97dc0401d29a5d'
-    oldFile: null
-  /data/element.xml:
-    newFile: !uuid '9614908610eb77542730865dd339cc1365b86ba2'
-    oldFile: null
-  /data/nist.txt:
-    newFile: !uuid '8065f67b077c3c5212ba1afb5d14b472073f65bc'
-    oldFile: null
-  /ui:
-    newFile: !uuid '7c196ae3361661336ed48c3c1963f6d06d10330d'
-    oldFile: !uuid 'a52aebeaa3de835119e75763de63782813e34ac3'
-  /ui/assign_material_dialog.py:
-    newFile: !uuid '4b6fdeeee8a9b4e01fa5e0edc7f4c2cc8f1ac310'
-    oldFile: null
-  /ui/export_mesh_dialog.py:
-    newFile: !uuid 'bb89ab0154675fd96407efdbbf4c2aa893a47161'
-    oldFile: null
-  /ui/interference_dialog.py:
-    newFile: !uuid 'e81616da20158331a83b777e7e2373de97197030'
-    oldFile: null
-  /ui/local_material_dialog.py:
-    newFile: !uuid '95724f0e88c224b83fe2b6940f5c0cb965aea801'
-    oldFile: null
-gitCommitId: !uuid '87bf21bcb1181d69d1618f7bce185179b396c541'
+gitCommitId: !uuid 'a0a5ff7dfce2ae6eb44309211a9cebecca48bdce'
 renames: {
   }
-revisionId: 8
+revisionId: 9
