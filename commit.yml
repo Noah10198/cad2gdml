@@ -2,49 +2,37 @@
 branches: {
   }
 fileChange:
-  /app:
-    newFile: !uuid '1a53204dbc5ece0ab4894c08704d12357acb62aa'
-    oldFile: !uuid '773d97582843d8d6d0aa61575bd90702fbc603bd'
-  /app/main_window.py:
-    newFile: !uuid '3b99dff41350a4ec125f4a321ef6c18cd2ed6623'
-    oldFile: !uuid '7ba360a3da823a7b8cc96c39debd672db5a53b72'
-  /core:
-    newFile: !uuid 'ec9bbcb186d46464d448a9912f00ea186e7cdca6'
-    oldFile: !uuid '0c0e560d8e2b071593fcc1fe682ac0e498b48b26'
-  /core/cad_reader.py:
-    newFile: !uuid 'b92c52d91e5b4f1292b755ee6014913edf46398c'
-    oldFile: !uuid 'f5d179233e010b2e40d5723818e988c7ad61477c'
-  /core/geo_data_agent.py:
-    newFile: !uuid 'a552c2881cc177e1699adf925dae2a1601b713b2'
-    oldFile: !uuid '5fe101063b988e82b1ae7cd359a1d4fdde54a0b0'
-  /core/import_worker.py:
-    newFile: !uuid 'a975d638b47b6b08f74eabbb5645b29d5978acfc'
+  /README.en.md:
+    newFile: null
+    oldFile: !uuid 'ec1a545c7e794cd6738250453558d1f53ddf879f'
+  /README.md:
+    newFile: !uuid '7797b0304b9a202bd62e01ba78ac425ea703ad9a'
+    oldFile: !uuid '86b3656cb7f27fdecaac761d72041cd4fae7a184'
+  /doc:
+    newFile: !uuid '15b9d3eec5cbe29fdc7a728cf32cbffff5d0adc7'
+    oldFile: !uuid 'adf6fda9b2d664c9943c4ffecbdb5785ffa6ed04'
+  /doc/export_gdml.md:
+    newFile: !uuid '239c989a5e08528c64a97f9e7da21aec982cbd21'
+    oldFile: null
+  /doc/import_geometry.md:
+    newFile: !uuid 'a8dc29c2c169d7f936ddaeb30103a6faf80ae40d'
+    oldFile: null
+  /doc/installation.md:
+    newFile: !uuid 'f4fb0016a298df69955ae224610c55df1cd766cf'
+    oldFile: null
+  /doc/material_assignment.md:
+    newFile: !uuid '340f525b42d93f91fef4cda710cda37e4cdfa7bb'
+    oldFile: null
+  /doc/mesh.md:
+    newFile: !uuid 'ccbef9ea497e03ac4ba883237288fa7ccd26af25'
     oldFile: null
   /environment.yml:
-    newFile: !uuid '2ed6c28e9225268da09f151a1a08b53b59794dc6'
+    newFile: !uuid '2bbb72f5f5ade47205eceff621663f073be901e2'
+    oldFile: !uuid '2ed6c28e9225268da09f151a1a08b53b59794dc6'
+  /environment_full.yml:
+    newFile: !uuid 'cd21e3f8997976ffac6a2478662441c9ef09eb1d'
     oldFile: null
-  /main.py:
-    newFile: !uuid '6281ae8bbc4f483420275a2267ec522598a5899d'
-    oldFile: !uuid '1afe1877d0eb0f75b608f5a6d15d3c216818e1d6'
-  /requirements.txt:
-    newFile: null
-    oldFile: !uuid 'e36f153eda532cccd037dbb79dbe8a8088ae6e64'
-  /ui:
-    newFile: !uuid 'ef0b456bcebf7c0cd86160d79f0388f67a9157ee'
-    oldFile: !uuid '9041e24e724e608099e60a3c5086c2d75de0210c'
-  /ui/import_progress.py:
-    newFile: !uuid '16fce793a05119c259d41b716aa96a170fc1a9e2'
-    oldFile: null
-  /ui/interference_dialog.py:
-    newFile: !uuid 'b06ca6c407f85d40fca6e32e0f2d1ffac16a4c91'
-    oldFile: !uuid 'e81616da20158331a83b777e7e2373de97197030'
-  /ui/interference_dialog_v2.py:
-    newFile: !uuid '19f8037ed9dd5bf7da08ce6c69b283f91f985af8'
-    oldFile: null
-  /ui/toolbar.py:
-    newFile: !uuid '1c3a28d1874827cbc15c11fdb2c328a64c2eb56d'
-    oldFile: !uuid '86ab830cff7f653967d9c3f8f1cb1e8fa3413db0'
-gitCommitId: !uuid '912b67614cc40b62e9fa744b03635a04a3af58c1'
+gitCommitId: !uuid '077cc4e5e942697f07444730be11ce2d3079c4c0'
 renames: {
   }
-revisionId: 11
+revisionId: 12
