@@ -2,13 +2,49 @@
 branches: {
   }
 fileChange:
-  /ui:
-    newFile: !uuid '9041e24e724e608099e60a3c5086c2d75de0210c'
-    oldFile: !uuid '7c196ae3361661336ed48c3c1963f6d06d10330d'
-  /ui/export_gdml_dialog.py:
-    newFile: !uuid '6713d8bff91c50c3213c057f5c3090195ee269b9'
+  /app:
+    newFile: !uuid '1a53204dbc5ece0ab4894c08704d12357acb62aa'
+    oldFile: !uuid '773d97582843d8d6d0aa61575bd90702fbc603bd'
+  /app/main_window.py:
+    newFile: !uuid '3b99dff41350a4ec125f4a321ef6c18cd2ed6623'
+    oldFile: !uuid '7ba360a3da823a7b8cc96c39debd672db5a53b72'
+  /core:
+    newFile: !uuid 'ec9bbcb186d46464d448a9912f00ea186e7cdca6'
+    oldFile: !uuid '0c0e560d8e2b071593fcc1fe682ac0e498b48b26'
+  /core/cad_reader.py:
+    newFile: !uuid 'b92c52d91e5b4f1292b755ee6014913edf46398c'
+    oldFile: !uuid 'f5d179233e010b2e40d5723818e988c7ad61477c'
+  /core/geo_data_agent.py:
+    newFile: !uuid 'a552c2881cc177e1699adf925dae2a1601b713b2'
+    oldFile: !uuid '5fe101063b988e82b1ae7cd359a1d4fdde54a0b0'
+  /core/import_worker.py:
+    newFile: !uuid 'a975d638b47b6b08f74eabbb5645b29d5978acfc'
     oldFile: null
-gitCommitId: !uuid 'c29317917514d1d6196531b2d43b3f8f9830032e'
+  /environment.yml:
+    newFile: !uuid '2ed6c28e9225268da09f151a1a08b53b59794dc6'
+    oldFile: null
+  /main.py:
+    newFile: !uuid '6281ae8bbc4f483420275a2267ec522598a5899d'
+    oldFile: !uuid '1afe1877d0eb0f75b608f5a6d15d3c216818e1d6'
+  /requirements.txt:
+    newFile: null
+    oldFile: !uuid 'e36f153eda532cccd037dbb79dbe8a8088ae6e64'
+  /ui:
+    newFile: !uuid 'ef0b456bcebf7c0cd86160d79f0388f67a9157ee'
+    oldFile: !uuid '9041e24e724e608099e60a3c5086c2d75de0210c'
+  /ui/import_progress.py:
+    newFile: !uuid '16fce793a05119c259d41b716aa96a170fc1a9e2'
+    oldFile: null
+  /ui/interference_dialog.py:
+    newFile: !uuid 'b06ca6c407f85d40fca6e32e0f2d1ffac16a4c91'
+    oldFile: !uuid 'e81616da20158331a83b777e7e2373de97197030'
+  /ui/interference_dialog_v2.py:
+    newFile: !uuid '19f8037ed9dd5bf7da08ce6c69b283f91f985af8'
+    oldFile: null
+  /ui/toolbar.py:
+    newFile: !uuid '1c3a28d1874827cbc15c11fdb2c328a64c2eb56d'
+    oldFile: !uuid '86ab830cff7f653967d9c3f8f1cb1e8fa3413db0'
+gitCommitId: !uuid '912b67614cc40b62e9fa744b03635a04a3af58c1'
 renames: {
   }
-revisionId: 10
+revisionId: 11
