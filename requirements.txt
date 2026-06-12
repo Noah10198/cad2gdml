@@ -1,4 +1,0 @@
-PyQt6>=6.4
-pythonocc-core>=7.6
-vtk>=9.2
-numpy>=1.21

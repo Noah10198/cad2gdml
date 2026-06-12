@@ -7,13 +7,26 @@ Initializes the Qt application, creates and displays the main window.
 
 import sys
 import os
+import ctypes
 
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Suppress Qt dark border warning on Windows (cosmetic only)
+# Suppress cosmetic Qt warnings on Windows (dark border, OpenGL, etc.)
 os.environ["QT_WIN_NEED_DARK_BORDER"] = "1"
-os.environ["QT_LOGGING_RULES"] = "qt.qpa.windows.warning=false"
+os.environ["QT_LOGGING_RULES"] = ("qt.qpa.windows.warning=false;"
+                                  "qt.qpa.gl.warning=false;"
+                                  "qt.qpa.eglfs.warning=false")
+
+# Disable Windows "Not Responding" ghosting for the entire process.
+# This prevents the system from replacing our window with a white ghost
+# overlay when the main thread is briefly blocked (e.g. during OCC I/O).
+# Any OCC blocking operation will simply pause the UI without triggering
+# the "无响应" / "Not Responding" indicator.
+try:
+    ctypes.windll.user32.DisableProcessWindowsGhosting()
+except Exception:
+    pass
 
 from PyQt6.QtWidgets import QApplication
 

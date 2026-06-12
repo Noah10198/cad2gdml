@@ -52,6 +52,20 @@ class GeoDataAgent:
             error_info.append(str(e))
             return False
 
+    def add_file_nodes(self, file_nodes: List[GDataNode]) -> None:
+        """Register pre-read file nodes (from ImportWorker) into the data tree.
+
+        Each file node and all its descendants get assigned unique entry IDs.
+        """
+        for file_node in file_nodes:
+            entry_id = self._generate_entry_id()
+            file_node.entry_id = entry_id
+            self._entry_id_map[entry_id] = file_node
+            self._root_node.add_child(file_node)
+            for child in file_node.get_all_descendants():
+                child.entry_id = self._generate_entry_id()
+                self._entry_id_map[child.entry_id] = child
+
     def get_all_geo_file_nodes(self) -> List[GDataNode]:
         return [c for c in self._root_node.children
                 if c.node_type in (NodeType.STEP_FILE, NodeType.GEO_FILE)]

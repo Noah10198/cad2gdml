@@ -1,0 +1,11 @@
+name: cad2gdml
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pythonocc-core>=7.6
+  - pip
+  - pip:
+    - PyQt6>=6.4
+    - vtk>=9.2

@@ -3,12 +3,14 @@ MainWindow - Primary application window.
 """
 
 import os
+import time
 from typing import Optional
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QSplitter, QVBoxLayout,
-    QWidget, QFileDialog, QMessageBox, QDockWidget, QToolBar, QDialog
+    QWidget, QFileDialog, QMessageBox, QDockWidget, QToolBar,
+    QDialog, QProgressDialog
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPalette, QColor
@@ -75,6 +77,7 @@ class MainWindow(QMainWindow):
 
         # Interference check state
         self._interference_dlg: Optional['InterferenceDialog'] = None
+        self._interference_dlg_v2: Optional['InterferenceDialogV2'] = None
         self._last_import_dir: str = ""
 
         # Build UI before theme
@@ -257,6 +260,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self._toolbar.import_step_clicked.connect(self._slot_import_step)
         self._toolbar.interference_clicked.connect(self._slot_interference)
+        self._toolbar.interference2_clicked.connect(self._slot_interference_2)
         self._toolbar.assign_material_clicked.connect(self._slot_assign_material)
         self._toolbar.mesh_clicked.connect(self._slot_mesh)
         self._toolbar.view_mesh_clicked.connect(self._slot_view_mesh)
@@ -289,75 +293,141 @@ class MainWindow(QMainWindow):
             return
         self._last_import_dir = os.path.dirname(files[0])
 
+        t_import = time.time()
         self._logger.log_system(f"Importing: {', '.join(files)} ...")
 
-        # 1. Mark the start
-        self._task_manager.start_task("Import CAD")
-        self._task_manager.update_progress(10, "Reading CAD files ...")
+        from PyQt6.QtWidgets import QProgressDialog
+        progress = QProgressDialog("Reading CAD files...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Import CAD")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
         QApplication.processEvents()
 
-        # 2. Actually read the STEP files
-        error_info: list = []
-        ok = self._geo_agent.read_step_files(files, error_info)
+        color_gen = LegoColorSingleton()
+        all_leaves: list = []  # accumulate leaf nodes for final batch render
+        solid_count = [0]
 
-        if not ok and error_info:
+        def _progress_cb(current: int, total: int,
+                         new_leaves: Optional[list] = None):
+            """Simple progress updater — does NOT render (that would slow the
+            blocking OCC read).  Instead stores leaves for post-read rendering."""
+            pct = int((current / total) * 85) if total > 0 else 0
+            progress.setValue(pct)
+            if new_leaves:
+                all_leaves.extend(new_leaves)
+                solid_count[0] += len(new_leaves)
+            QApplication.processEvents()
+
+        error_info: list = []
+        file_nodes = []
+
+        for i, fp in enumerate(files):
+            if progress.wasCanceled():
+                progress.close()
+                self._logger.log_system("Import cancelled by user.",
+                                        level=LogLevel.WARNING)
+                return
+
+            label = Path(fp).name
+            progress.setLabelText(f"Reading {label}...")
+            QApplication.processEvents()
+
+            node = self._geo_agent._cad_reader.read_file(fp, error_info,
+                                                          _progress_cb)
+            if node is not None:
+                file_nodes.append(node)
+                self._geo_agent.add_file_nodes([node])
+
+        if not file_nodes:
+            progress.close()
             for err in error_info:
                 self._logger.log_system(f"  [ERROR] {err}", level=LogLevel.ERROR)
+            self._logger.log_system("Import failed — no valid geometry.",
+                                    level=LogLevel.ERROR)
+            return
 
-        self._task_manager.update_progress(40, "Building project tree ...")
+        # ── 2. Build project tree ────────────────────────────────────────
+        progress.setValue(86)
+        progress.setLabelText("Building project tree...")
         QApplication.processEvents()
-
-        # 3. Populate the tree (auto-expand logic is inside populate_from_geo_agent)
         self._project_tree.populate_from_geo_agent(self._geo_agent)
 
-        self._task_manager.update_progress(60, "Rendering 3D shapes ...")
+        # ── 3. Batch render all leaf shapes ──────────────────────────────
+        progress.setValue(90)
+        progress.setLabelText("Rendering geometry...")
         QApplication.processEvents()
-
-        # 4. Create AIS shapes with Lego colors and display them
-        color_gen = LegoColorSingleton()
-        solid_count = 0
-        for solid_node in self._geo_agent.get_all_solid_nodes():
-            if solid_node.shape is None:
+        rendered = 0
+        total_to_render = len(all_leaves)
+        for n in all_leaves:
+            if n.shape is None or n.shape.IsNull():
                 continue
             try:
-                ais = AIS_Shape(solid_node.shape)
+                ais = AIS_Shape(n.shape)
                 ais.SetColor(color_gen.get_next_color())
-                ais.SetDisplayMode(1)  # AIS_Shaded
-                solid_node.ais_shape = ais
-                self._occ_widget.add_shape(ais, name=solid_node.entry_id, update=False)
-                solid_count += 1
-            except Exception as e:
-                self._logger.log_system(
-                    f"  Error displaying {solid_node.name}: {e}", level=LogLevel.WARNING)
+                ais.SetDisplayMode(1)
+                ais.SetTransparency(0.4)  # semi-transparent (match interference preview)
+                n.ais_shape = ais
+                self._occ_widget.add_shape(ais, name=n.name, update=False)
+                rendered += 1
+                if rendered % max(1, total_to_render // 10) == 0:
+                    progress.setValue(90 + int(rendered / total_to_render * 10))
+                    QApplication.processEvents()
+            except Exception:
+                pass
 
-        # 5. Finalize
         self._occ_widget.fit_all()
+        progress.setValue(100)
+        progress.setLabelText("Complete.")
+        QApplication.processEvents()
+        progress.close()
 
-        self._task_manager.update_progress(100, f"Imported {solid_count} solids")
-        self._task_manager.finish_task()
-
-        file_names = ", ".join(Path(f).name for f in files)
+        elapsed = time.time() - t_import
+        file_names = ", ".join(Path(fp).name for fp in files)
         self._logger.log_system(
-            f"Import complete — {solid_count} solids from {len(files)} file(s): {file_names}")
+            f"Import complete ({elapsed:.1f}s) — {rendered} solids from "
+            f"{len(files)} file(s): {file_names}")
 
     def _slot_interference(self):
-        """Show the CAD-level B-Rep interference check dialog (non-modal)."""
+        """Show Interference 1 (sampled heuristic, for reference only)."""
         solids = self._geo_agent.get_all_solid_nodes()
         if len(solids) < 2:
-            self._logger.log_system("Interference: need at least 2 solids (import a multi-part STEP).")
-            QMessageBox.information(self, "Interference Check",
+            self._logger.log_system("Interference 1: need at least 2 solids.")
+            QMessageBox.information(self, "Interference Check 1",
                                     "Need at least 2 solid bodies.\nImport a STEP file with multiple parts first.")
             return
 
-        # Reuse existing dialog if still open
         if self._interference_dlg is None or not self._interference_dlg.isVisible():
-            from ui.interference_dialog import InterferenceDialog
-            self._interference_dlg = InterferenceDialog(
-                self._geo_agent, self, import_dir=self._last_import_dir)
+            from ui.interference_dialog_v2 import InterferenceDialogV2
+            self._interference_dlg = InterferenceDialogV2(
+                self._geo_agent, self,
+                import_dir=self._last_import_dir,
+                log_callback=lambda msg: self._logger.log_system(msg))
             self._interference_dlg.show()
         else:
             self._interference_dlg.raise_()
             self._interference_dlg.activateWindow()
+
+    def _slot_interference_2(self):
+        """Show Interference 2 (exhaustive OBB + exact check on all close pairs)."""
+        solids = self._geo_agent.get_all_solid_nodes()
+        if len(solids) < 2:
+            self._logger.log_system("Interference 2: need at least 2 solids.")
+            QMessageBox.information(self, "Interference Check 2",
+                                    "Need at least 2 solid bodies.\nImport a STEP file with multiple parts first.")
+            return
+
+        if self._interference_dlg_v2 is None or not self._interference_dlg_v2.isVisible():
+            from ui.interference_dialog import InterferenceDialog
+            self._interference_dlg_v2 = InterferenceDialog(
+                self._geo_agent, self,
+                import_dir=self._last_import_dir,
+                log_callback=lambda msg: self._logger.log_system(msg))
+            self._interference_dlg_v2.show()
+        else:
+            self._interference_dlg_v2.raise_()
+            self._interference_dlg_v2.activateWindow()
 
     def _slot_mesh(self):
         """Open the mesh parameter dialog, then start meshing in background."""
@@ -414,6 +484,8 @@ class MainWindow(QMainWindow):
         self._mesh_progress_dlg.show()
 
         # Create and start the background mesh runner
+        self._mesh_start_time = time.time()
+
         self._mesh_runner = MeshRunner(
             nodes=solid_nodes,
             work_dir=self._mesh_work_dir,
@@ -464,11 +536,12 @@ class MainWindow(QMainWindow):
 
     def _on_mesh_finished(self, success: bool, mesh_paths: dict, message: str):
         """Handle meshing completion."""
+        elapsed = time.time() - self._mesh_start_time
         self._meshed_nodes = mesh_paths
         if success:
-            self._logger.log_system(f"Meshing completed: {message}")
+            self._logger.log_system(f"Meshing completed ({elapsed:.1f}s): {message}")
         else:
-            self._logger.log_system(f"Meshing finished with issues: {message}",
+            self._logger.log_system(f"Meshing finished with issues ({elapsed:.1f}s): {message}",
                                     level=LogLevel.WARNING)
         self._mesh_runner = None
 

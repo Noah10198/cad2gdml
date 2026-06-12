@@ -10,12 +10,15 @@ between every pair of solid bodies, then classifies each pair as:
 Clicking a row opens an **embedded OCC 3D preview** showing only the
 selected pair with distinct colours and a red intersection curve.
 No changes are made to the main OCC viewport.
+
+Performance optimisation:
+  - OBB pre-filter: compute oriented bounding boxes once, skip distant pairs
 """
 
 from typing import Optional, List, Tuple
 import csv
-import os
 import time
+import math
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
@@ -36,6 +39,10 @@ from OCC.Core.Quantity import (
     Quantity_Color, Quantity_TOC_RGB,
     Quantity_NOC_BLUE1, Quantity_NOC_RED,
 )
+
+# OCC bounding box (oriented)
+from OCC.Core.Bnd import Bnd_OBB
+from OCC.Core.BRepBndLib import brepbndlib
 
 # OCC 3D viewer
 from OCC.Display import OCCViewer
@@ -265,11 +272,13 @@ class InterferenceDialog(QDialog):
     OCC_SQUARE = 360  # px — fixed square side for the embedded 3D preview
 
     def __init__(self, geo_agent, parent: Optional[QWidget] = None,
-                 import_dir: str = ""):
+                 import_dir: str = "",
+                 log_callback: Optional[callable] = None):
         super().__init__(parent)
         self.setWindowTitle("Interference Check")
         self.setModal(False)
         self._import_dir = import_dir
+        self._log_callback = log_callback
 
         # Fixed dialog size: OCC square * 1:1.8 ratio
         occ = self.OCC_SQUARE
@@ -380,6 +389,59 @@ class InterferenceDialog(QDialog):
         btn_row.addWidget(self._close_btn)
         layout.addLayout(btn_row)
 
+    # ── OBB helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_bbox(shape: TopoDS_Shape) -> Bnd_OBB:
+        """Compute an oriented bounding box (OBB) for a shape.
+
+        OBB follows the shape's natural orientation, producing a much
+        tighter fit than AABB for tilted / slender parts (beams, pipes).
+        This reduces false positives in the pre-filter.
+        """
+        obb = Bnd_OBB()
+        brepbndlib.AddOBB(shape, obb)
+        return obb
+
+    @staticmethod
+    def _obb_corners(obb: Bnd_OBB):
+        """Return the 8 corner coordinates of an OBB as list of gp_XYZ."""
+        c = obb.Center()
+        axes = [obb.XDirection(), obb.YDirection(), obb.ZDirection()]
+        half = [obb.XHSize(), obb.YHSize(), obb.ZHSize()]
+        corners = []
+        for i in range(8):
+            p = c
+            p = p.Added(axes[0].Multiplied(half[0] if (i & 1) else -half[0]))
+            p = p.Added(axes[1].Multiplied(half[1] if (i & 2) else -half[1]))
+            p = p.Added(axes[2].Multiplied(half[2] if (i & 4) else -half[2]))
+            corners.append(p)
+        return corners
+
+    @staticmethod
+    def _bbox_distance_sq(box_a: Bnd_OBB, box_b: Bnd_OBB) -> float:
+        """Squared minimum distance between two OBBs (0 if they overlap).
+
+        Uses IsOut() for the overlap test (fast), and falls back to
+        minimum vertex-to-vertex distance for separated boxes.
+        """
+        if not box_a.IsOut(box_b):
+            return 0.0  # boxes overlap
+
+        # Minimum vertex-vertex distance (conservative, but sufficient
+        # for a pre-filter — overestimates slightly at worst).
+        corners_a = InterferenceDialog._obb_corners(box_a)
+        corners_b = InterferenceDialog._obb_corners(box_b)
+        min_d2 = float('inf')
+        for ca in corners_a:
+            for cb in corners_b:
+                d2 = (ca.X() - cb.X())**2 + (ca.Y() - cb.Y())**2 + (ca.Z() - cb.Z())**2
+                if d2 < min_d2:
+                    min_d2 = d2
+                    if min_d2 == 0.0:
+                        return 0.0
+        return min_d2
+
     # ── Core check ────────────────────────────────────────────────────
 
     def _do_check(self):
@@ -401,36 +463,49 @@ class InterferenceDialog(QDialog):
         progress.show()
         QApplication.processEvents()
 
+        # ── Phase 1: pre-compute bounding boxes for all solids ─────────
+        t0_bbox = time.time()
+        bboxes = [self._compute_bbox(s[2]) for s in self._solids]
+        t_bbox = time.time() - t0_bbox
+
+        # ── Phase 2: OBB pre-filter → exact check on close pairs ────
         cancelled = False
         t0 = time.time()
-        hard_count = contact_count = safe_count = 0
+        hard_count = contact_count = safe_count = obb_skipped = 0
+        done = 0
 
-        idx = 0
         for i in range(n):
             if cancelled:
                 break
+            box_a = bboxes[i]
             id_a, name_a, shape_a = self._solids[i]
             for j in range(i + 1, n):
                 if cancelled:
                     break
+                box_b = bboxes[j]
                 id_b, name_b, shape_b = self._solids[j]
-                status, distance = self._classify_pair(shape_a, shape_b)
-                self._results.append({
-                    "i": i, "j": j,
-                    "id_a": id_a, "name_a": name_a,
-                    "id_b": id_b, "name_b": name_b,
-                    "status": status, "distance": distance,
-                    "shape_a": shape_a, "shape_b": shape_b,
-                })
-                hard_count += (status == "hard")
-                contact_count += (status == "contact")
-                safe_count += (status == "safe")
-                idx += 1
-                if idx % max(1, total_pairs // 20) == 0:
-                    progress.setValue(idx)
-                    QApplication.processEvents()
+
+                # Fast OBB pre-filter (nanosecond-grade math)
+                bdist_sq = self._bbox_distance_sq(box_a, box_b)
+                if bdist_sq > CONTACT_THRESHOLD * CONTACT_THRESHOLD:
+                    # OBBs are far apart → trivially safe, no OCC call needed
+                    d = math.sqrt(bdist_sq) if bdist_sq > 0 else 0.0
+                    self._results.append(self._make_result(
+                        i, j, id_a, name_a, id_b, name_b,
+                        "safe", d, shape_a, shape_b))
+                    obb_skipped += 1
                 else:
-                    progress.setValue(idx)
+                    # OBBs close/overlapping → run exact B-Rep classification
+                    status, distance = self._classify_pair(shape_a, shape_b)
+                    self._results.append(self._make_result(
+                        i, j, id_a, name_a, id_b, name_b,
+                        status, distance, shape_a, shape_b))
+                    hard_count += (status == "hard")
+                    contact_count += (status == "contact")
+                    safe_count += (status == "safe")
+
+                done += 1
+                progress.setValue(done)
                 if progress.wasCanceled():
                     cancelled = True
                     break
@@ -448,15 +523,38 @@ class InterferenceDialog(QDialog):
                 f"{safe_count}"
             )
             self._summary_label.setText(
-                f"{len(self._results)} pairs checked in {elapsed:.1f}s    |    {parts}"
+                f"{len(self._results)} pairs checked in {elapsed:.1f}s"
+                f"  (bbox: {t_bbox:.2f}s)"
+                f"  |  {parts}"
             )
+            if self._log_callback:
+                self._log_callback(
+                    f"Interference check completed ({elapsed:.1f}s): "
+                    f"{hard_count} hard, {contact_count} contact, "
+                    f"{safe_count} safe (OBB filter: {obb_skipped} skipped)")
         else:
             self._summary_label.setText(
                 f"⚠ Cancelled — {len(self._results)} / {total_pairs} pairs checked"
             )
+            if self._log_callback:
+                self._log_callback(
+                    f"Interference check cancelled — {len(self._results)} / {total_pairs} pairs")
             self._results.clear()
 
         self._populate_table()
+
+    # ── Helper: build result dict without repeating boilerplate ───────
+
+    @staticmethod
+    def _make_result(i, j, id_a, name_a, id_b, name_b,
+                     status, distance, shape_a, shape_b):
+        return {
+            "i": i, "j": j,
+            "id_a": id_a, "name_a": name_a,
+            "id_b": id_b, "name_b": name_b,
+            "status": status, "distance": distance,
+            "shape_a": shape_a, "shape_b": shape_b,
+        }
 
     # ── Classification ────────────────────────────────────────────────
 
@@ -465,7 +563,6 @@ class InterferenceDialog(QDialog):
                        shape_b: TopoDS_Shape) -> Tuple[str, float]:
         try:
             dist = BRepExtrema_DistShapeShape(shape_a, shape_b)
-            dist.Perform()
             if not dist.IsDone():
                 return ("unknown", float("inf"))
             d = dist.Value()

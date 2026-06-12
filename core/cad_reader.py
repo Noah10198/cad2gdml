@@ -6,14 +6,14 @@ All formats are converted to TopoDS_Shape and organized into the same
 GDataNode tree structure for downstream processing.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Callable
 from pathlib import Path
 
 from OCC.Core.STEPControl import STEPControl_Reader
 from OCC.Core.IGESControl import IGESControl_Reader
 from OCC.Core.StlAPI import StlAPI_Reader
 from OCC.Core.BRep import BRep_Builder
-from OCC.Core.BRepTools import breptools_Read
+from OCC.Core.BRepTools import breptools
 from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Iterator
 from OCC.Core.TopLoc import TopLoc_Location
 from OCC.Core.TopAbs import TopAbs_SOLID, TopAbs_SHELL, TopAbs_COMPOUND, TopAbs_FACE, TopAbs_EDGE
@@ -47,13 +47,16 @@ class CADReader:
         """Set the list of files to read."""
         self._file_paths = file_paths
 
-    def read_file(self, file_path: str, error_info: List[str]) -> Optional[GDataNode]:
+    def read_file(self, file_path: str, error_info: List[str],
+                  progress_callback=None) -> Optional[GDataNode]:
         """
         Read a single CAD file. Format is auto-detected from the extension.
 
         Args:
             file_path: Path to the CAD file.
             error_info: List to append error messages to.
+            progress_callback: Optional callable(current_step, total_steps)
+                               called after each root/shape transfer.
 
         Returns:
             File node (with all child geometry nodes), or None on failure.
@@ -66,13 +69,13 @@ class CADReader:
 
         try:
             if fmt == "STEP":
-                return self._read_step(file_path, error_info)
+                return self._read_step(file_path, error_info, progress_callback)
             elif fmt == "IGES":
-                return self._read_iges(file_path, error_info)
+                return self._read_iges(file_path, error_info, progress_callback)
             elif fmt == "BREP":
-                return self._read_brep(file_path, error_info)
+                return self._read_brep(file_path, error_info, progress_callback)
             elif fmt == "STL":
-                return self._read_stl(file_path, error_info)
+                return self._read_stl(file_path, error_info, progress_callback)
         except Exception as e:
             error_info.append(f"Error reading {file_path}: {str(e)}")
             return None
@@ -81,27 +84,59 @@ class CADReader:
 
     # ── Format-specific readers ────────────────────────────────────────
 
-    def _read_step(self, file_path: str, error_info: List[str]) -> Optional[GDataNode]:
-        """Read a STEP (.step/.stp) file."""
+    def _read_step(self, file_path: str, error_info: List[str],
+                   progress_callback=None) -> Optional[GDataNode]:
+        """Read a STEP (.step/.stp) file using STEPControl_Reader.
+
+        Uses TransferRoots() (bulk transfer) for maximum speed — this is much
+        faster than per-root TransferRoot(i) + per-leaf AIS_Shape creation
+        inside the callback.  After building the tree, the final callback
+        reports the total leaf count to the caller.
+        """
         reader = STEPControl_Reader()
         if reader.ReadFile(file_path) != 1:  # IFSelect_RetDone
             error_info.append(f"Failed to read STEP file: {file_path}")
             return None
-        reader.TransferRoots()
-        return self._build_multi_shape_node(file_path, reader.NbShapes(),
-                                            lambda i: reader.Shape(i))
 
-    def _read_iges(self, file_path: str, error_info: List[str]) -> Optional[GDataNode]:
+        total_roots = reader.NbRootsForTransfer()
+        if total_roots == 0:
+            error_info.append(f"No transferable roots in STEP file: {file_path}")
+            return None
+
+        file_name = Path(file_path).stem
+        file_node = GDataNode(NodeType.STEP_FILE, file_name)
+
+        # Bulk transfer — one fast call, much cheaper than per-root loops
+        reader.TransferRoots()
+        for i in range(1, reader.NbShapes() + 1):
+            shape = reader.Shape(i)
+            if shape.IsNull():
+                continue
+            self._add_shape_to_node(shape, file_node, file_name, i)
+
+        # Report progress once with all leaf nodes for rendering
+        if progress_callback is not None:
+            leaves = file_node.get_leaf_nodes()
+            progress_callback(1, 1, leaves)
+
+        return file_node
+
+    def _read_iges(self, file_path: str, error_info: List[str],
+                   progress_callback=None) -> Optional[GDataNode]:
         """Read an IGES (.igs/.iges) file."""
         reader = IGESControl_Reader()
         if reader.ReadFile(file_path) != 1:  # IFSelect_RetDone
             error_info.append(f"Failed to read IGES file: {file_path}")
             return None
         reader.TransferRoots()
-        return self._build_multi_shape_node(file_path, reader.NbShapes(),
-                                            lambda i: reader.Shape(i))
+        file_node = self._build_multi_shape_node(file_path, reader.NbShapes(),
+                                                 lambda i: reader.Shape(i))
+        if progress_callback is not None and file_node is not None:
+            progress_callback(1, 1, file_node.get_leaf_nodes())
+        return file_node
 
-    def _read_brep(self, file_path: str, error_info: List[str]) -> Optional[GDataNode]:
+    def _read_brep(self, file_path: str, error_info: List[str],
+                   progress_callback=None) -> Optional[GDataNode]:
         """Read a BREP (.brep) file.
 
         A BREP file contains a single TopoDS_Shape which may be a COMPOUND
@@ -111,16 +146,19 @@ class CADReader:
         """
         shape = TopoDS_Shape()
         builder = BRep_Builder()
-        if not breptools_Read(shape, file_path, builder):
+        if not breptools.Read(shape, file_path, builder):
             error_info.append(f"Failed to read BREP file: {file_path}")
             return None
         file_name = Path(file_path).stem
         file_node = GDataNode(NodeType.STEP_FILE, file_name)
         if not shape.IsNull():
             self._add_shape_to_node(shape, file_node, file_name, 1)
+        if progress_callback is not None and file_node is not None:
+            progress_callback(1, 1, file_node.get_leaf_nodes())
         return file_node
 
-    def _read_stl(self, file_path: str, error_info: List[str]) -> Optional[GDataNode]:
+    def _read_stl(self, file_path: str, error_info: List[str],
+                  progress_callback=None) -> Optional[GDataNode]:
         """Read an STL (.stl) file.
 
         STL is a mesh format with no B-Rep topology — the entire file
@@ -132,7 +170,10 @@ class CADReader:
         if not reader.Read(shape, file_path):
             error_info.append(f"Failed to read STL file: {file_path}")
             return None
-        return self._build_single_shape_node(file_path, shape)
+        file_node = self._build_single_shape_node(file_path, shape)
+        if progress_callback is not None and file_node is not None:
+            progress_callback(1, 1, file_node.get_leaf_nodes())
+        return file_node
 
     # ── Tree builders ─────────────────────────────────────────────────
 
@@ -175,13 +216,16 @@ class CADReader:
 
         return file_node
 
-    def read_files(self, file_paths: List[str], error_info: List[str]) -> List[GDataNode]:
+    def read_files(self, file_paths: List[str], error_info: List[str],
+                   progress_callback=None) -> List[GDataNode]:
         """
         Batch-read multiple CAD files.
 
         Args:
             file_paths: List of file paths to read.
             error_info: List to append error messages to.
+            progress_callback: Optional callable(current_step, total_steps)
+                               forwarded to each individual read_file call.
 
         Returns:
             List of file nodes (one per successfully read file).
@@ -189,7 +233,7 @@ class CADReader:
         self._file_paths = file_paths
         file_nodes = []
         for fp in file_paths:
-            node = self.read_file(fp, error_info)
+            node = self.read_file(fp, error_info, progress_callback)
             if node is not None:
                 file_nodes.append(node)
         return file_nodes
