@@ -2,37 +2,37 @@
 branches: {
   }
 fileChange:
-  /README.en.md:
-    newFile: null
-    oldFile: !uuid 'ec1a545c7e794cd6738250453558d1f53ddf879f'
-  /README.md:
-    newFile: !uuid '7797b0304b9a202bd62e01ba78ac425ea703ad9a'
-    oldFile: !uuid '86b3656cb7f27fdecaac761d72041cd4fae7a184'
+  /app:
+    newFile: !uuid 'f3372e5b3413560689db09d507f5b1b710382aa9'
+    oldFile: !uuid '1a53204dbc5ece0ab4894c08704d12357acb62aa'
+  /app/main_window.py:
+    newFile: !uuid '28b5a354dbe6731036987ebdfdeb2bab17541871'
+    oldFile: !uuid '3b99dff41350a4ec125f4a321ef6c18cd2ed6623'
   /doc:
-    newFile: !uuid '15b9d3eec5cbe29fdc7a728cf32cbffff5d0adc7'
-    oldFile: !uuid 'adf6fda9b2d664c9943c4ffecbdb5785ffa6ed04'
-  /doc/export_gdml.md:
-    newFile: !uuid '239c989a5e08528c64a97f9e7da21aec982cbd21'
-    oldFile: null
+    newFile: !uuid '0befb6308ca61400cf326e30df7a0693068d3a6c'
+    oldFile: !uuid '15b9d3eec5cbe29fdc7a728cf32cbffff5d0adc7'
   /doc/import_geometry.md:
-    newFile: !uuid 'a8dc29c2c169d7f936ddaeb30103a6faf80ae40d'
-    oldFile: null
-  /doc/installation.md:
-    newFile: !uuid 'f4fb0016a298df69955ae224610c55df1cd766cf'
-    oldFile: null
-  /doc/material_assignment.md:
-    newFile: !uuid '340f525b42d93f91fef4cda710cda37e4cdfa7bb'
-    oldFile: null
-  /doc/mesh.md:
-    newFile: !uuid 'ccbef9ea497e03ac4ba883237288fa7ccd26af25'
-    oldFile: null
-  /environment.yml:
-    newFile: !uuid '2bbb72f5f5ade47205eceff621663f073be901e2'
-    oldFile: !uuid '2ed6c28e9225268da09f151a1a08b53b59794dc6'
-  /environment_full.yml:
-    newFile: !uuid 'cd21e3f8997976ffac6a2478662441c9ef09eb1d'
-    oldFile: null
-gitCommitId: !uuid '077cc4e5e942697f07444730be11ce2d3079c4c0'
+    newFile: !uuid '3050ab2e5ce3c5ed7ba40624c9afca6795432623'
+    oldFile: !uuid 'a8dc29c2c169d7f936ddaeb30103a6faf80ae40d'
+  /doc/interference2_algorithm.md:
+    newFile: !uuid '7f7e766b7d1b03b071c2d0e5e042159745446ffd'
+    oldFile: !uuid '23d34c6783e6d972a653826bf99a820c0e4e5727'
+  /mesh:
+    newFile: !uuid 'a15779bb12c3474b19390dcd4dc91770db0ae220'
+    oldFile: !uuid '795341a19f48875bed7ac5e0a565a29219168d9e'
+  /mesh/mesh_viewer.py:
+    newFile: !uuid '8009f1ec8fd5992ca4f38577311bcd1383c4d22e'
+    oldFile: !uuid '862e82210e0b8d3cec26357f849577432a7b16d7'
+  /ui:
+    newFile: !uuid '25d37f50af588cc9cecb627964f585e66cbab585'
+    oldFile: !uuid 'ef0b456bcebf7c0cd86160d79f0388f67a9157ee'
+  /ui/occ_widget.py:
+    newFile: !uuid 'a0062e9670f8e39119b1e910aac6d95928e655ec'
+    oldFile: !uuid 'd50c7a575496a902cfdf2b31f9bd78335215c0de'
+  /ui/project_tree.py:
+    newFile: !uuid 'bed24789e0462db96eac151645537462e7390f15'
+    oldFile: !uuid '5ebdb60693f8e68bb1dad487f08bcd651608467b'
+gitCommitId: !uuid '31c7248b2b601457e8d0c93248137701d0d00c41'
 renames: {
   }
-revisionId: 12
+revisionId: 13
