@@ -53,6 +53,22 @@ Project Tree
   - **Save Materials...** — Export all local materials to a JSON file
   - **Load Materials...** — Load local materials from a JSON file
 
+### Deleting Imported Geometry
+
+You can delete an entire imported geometry file node (e.g. `my_part.step`) and all its child parts:
+
+1. **Right-click** on the file-level node in the Project Tree.
+2. Select **❌ Delete Geometry** from the context menu.
+3. Confirm the deletion in the dialog.
+
+This will:
+- Remove the geometry shapes from the 3D viewer
+- Remove all associated material assignments
+- Remove any generated mesh data for those parts
+- The underlying interference check algorithms are preserved
+
+> **Note**: The delete option only appears on **file-level nodes** (e.g. `my_part.step`), not on individual solid leaf nodes. Deleting a file node removes the entire import.
+
 ### Tree Behaviour
 
 - If total parts ≤ 20, the tree expands fully by default.

@@ -326,6 +326,18 @@ class WidgetOCC(QWidget):
         except Exception:
             pass
 
+    def erase_shape(self, ais_shape: AIS_Shape, update: bool = True):
+        """Remove shape from both the OCC display and internal tracking dict."""
+        if ais_shape is None:
+            return
+        # Clean up internal dict
+        for key in list(self._displayed_shapes.keys()):
+            if self._displayed_shapes[key] is ais_shape:
+                del self._displayed_shapes[key]
+                break
+        # Remove from OCC context
+        self.remove_shape(ais_shape, update)
+
     def set_shape_visible(self, ais_shape: AIS_Shape, visible: bool, update: bool = True):
         if ais_shape is None:
             return

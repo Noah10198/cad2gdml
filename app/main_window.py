@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
         # Non-modal dialog refs
         self._assign_material_dlg = None
         self._export_gdml_dlg = None
+        self._mesh_viewers: list = []  # persistent refs to prevent GC from collecting active viewers
 
         # Mesh state
         self._mesh_runner: Optional[MeshRunner] = None
@@ -278,6 +279,8 @@ class MainWindow(QMainWindow):
             self._slot_save_local_materials)
         self._project_tree.load_local_materials_requested.connect(
             self._slot_load_local_materials)
+        self._project_tree.delete_geometry_requested.connect(
+            self._slot_delete_geometry)
         self._task_manager.progress_updated.connect(self._slot_update_progress)
         self._occ_widget.sig_shape_selected.connect(self._slot_occ_shape_selected)
 
@@ -388,6 +391,50 @@ class MainWindow(QMainWindow):
         self._logger.log_system(
             f"Import complete ({elapsed:.1f}s) — {rendered} solids from "
             f"{len(files)} file(s): {file_names}")
+
+    def _slot_delete_geometry(self, entry_id: str):
+        """Delete an imported geometry file node and all its children."""
+        node = self._geo_agent.convert_entry_id_to_node(entry_id)
+        if node is None:
+            return
+
+        reply = QMessageBox.question(
+            self, "Delete Geometry",
+            f"Delete '{node.name}' and all its parts?\n\n"
+            "This will remove geometry, material assignments, and mesh data.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Collect all descendant entry_ids (for mesh data cleanup)
+        all_descendants = node.get_all_descendants()
+        removed_ids = {node.entry_id}
+        for desc in all_descendants:
+            removed_ids.add(desc.entry_id)
+
+        # Remove AIS shapes from OCC widget
+        for desc in all_descendants:
+            if desc.ais_shape is not None:
+                self._occ_widget.erase_shape(desc.ais_shape, update=False)
+        if node.ais_shape is not None:
+            self._occ_widget.erase_shape(node.ais_shape, update=False)
+
+        # Remove from geo_agent data tree
+        self._geo_agent.remove_node(entry_id)
+
+        # Clean up mesh data associated with deleted ids
+        for eid in removed_ids:
+            self._meshed_nodes.pop(eid, None)
+
+        # Repopulate tree
+        self._project_tree.populate_from_geo_agent(self._geo_agent)
+
+        # Fit 3D view
+        self._occ_widget.fit_all()
+
+        self._logger.log_system(
+            f"Deleted geometry: {node.name} ({len(all_descendants)} part(s))")
 
     def _slot_interference(self):
         """Show Interference 1 (sampled heuristic, for reference only)."""
@@ -516,6 +563,11 @@ class MainWindow(QMainWindow):
         viewer = MeshViewer()
         viewer.load_mesh(self._meshed_nodes, mesh_params=self._last_mesh_params)
         viewer.show()
+        # Keep a reference so Python GC won't destroy the C++ QVTKRenderWindowInteractor
+        # while Qt is still delivering mouse events to it.
+        self._mesh_viewers.append(viewer)
+        viewer.finished.connect(
+            lambda result, v=viewer: self._mesh_viewers.remove(v))
         self._logger.log_system(
             f"Mesh preview opened: {len(self._meshed_nodes)} meshed part(s)."
         )

@@ -61,6 +61,7 @@ class ProjectTreeWidget(QWidget):
     remove_local_material_requested = pyqtSignal(str)  # mat_id
     save_local_materials_requested = pyqtSignal()
     load_local_materials_requested = pyqtSignal()
+    delete_geometry_requested = pyqtSignal(str)  # entry_id of file node to delete
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -199,10 +200,21 @@ class ProjectTreeWidget(QWidget):
             child.setData(0, Qt.ItemDataRole.UserRole, f"__local__:{mat_id}")
 
     def _on_context_menu(self, pos):
-        """Right-click context menu for Local Materials."""
+        """Right-click context menu for geometry and local materials."""
         item = self._tree.itemAt(pos)
         if item is None:
             return
+
+        # Right-click on a top-level imported geometry item (direct child of Geometry root)
+        if item.type() == TREE_ITEM_TYPE['GEO_ROOT'] and item.parent() is self._geometry_root:
+            menu = QMenu(self)
+            del_action = menu.addAction("❌ Delete Geometry")
+            entry_id = item.get_entry_id()
+            del_action.triggered.connect(
+                lambda: self.delete_geometry_requested.emit(entry_id))
+            menu.exec(self._tree.viewport().mapToGlobal(pos))
+            return
+
         if item is self._material_local:
             menu = QMenu(self)
             add_action = menu.addAction("➕ Add Material...")

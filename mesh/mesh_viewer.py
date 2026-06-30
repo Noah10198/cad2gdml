@@ -87,7 +87,6 @@ class MeshViewer(QDialog):
 
         # ---- E. Interference2 state (IntersectionPolyDataFilter-based) ----
         self._i2_actors: List[vtkActor] = []
-        self._btn_i2: Optional[QPushButton] = None
         self._i2_collided: Set[int] = set()        # indices of meshes with intersection
         # Cancel flag for interruptible computation
         self._i2_cancel_flag = False
@@ -146,13 +145,6 @@ class MeshViewer(QDialog):
         self._btn_collide.setToolTip("Toggle Interference1: clip-based overlap region extraction")
         self._btn_collide.clicked.connect(self._run_collision_detection)
         toolbar.addWidget(self._btn_collide)
-
-        # E — Interference2 (SelectEnclosedPoints)
-        self._btn_i2 = QPushButton("⚡ Interference2")
-        self._btn_i2.setCheckable(True)
-        self._btn_i2.setToolTip("Toggle Interference2: detect mesh penetration via SelectEnclosedPoints")
-        self._btn_i2.clicked.connect(self._run_interference2)
-        toolbar.addWidget(self._btn_i2)
 
         # D
         self._btn_distance = QPushButton("🌈 Distance")
@@ -353,7 +345,6 @@ class MeshViewer(QDialog):
         self._clip_active = False
         self._btn_clip.setChecked(False)
         self._btn_collide.setChecked(False)
-        self._btn_i2.setChecked(False)
         self._distance_mode = False
         self._btn_distance.setChecked(False)
         self._transparent = False

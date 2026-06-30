@@ -175,10 +175,12 @@ The original meshes are set to semi-transparent so the contour lines inside/behi
 | Check `GetStatus()` | Checked after `Update()` | ✓ |
 | Coplanar overlap fallback | Automatically falls back to Method B | ✓ |
 
-## Usage
+## Usage (Code Reference Only)
+
+> **Note**: The **Interference2** UI button has been removed from the Mesh Preview window. The algorithm code is retained in the codebase for reference or future re-integration.
 
 1. Load two or more meshed CAD parts
-2. Click **`⚡ Interference2`** button
+2. The algorithm is triggered via `MeshViewer._run_interference2()` — accessible programmatically
 3. Cyan/green contour lines appear at the intersection boundaries
 4. The report panel shows which method was used per pair (`IntersectionFilter` or `Cutter`)
 5. If `IntersectionFilter` fails (status=0), the report shows the failure reason and fallback
