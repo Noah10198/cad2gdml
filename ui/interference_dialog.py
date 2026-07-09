@@ -202,11 +202,16 @@ class _OCCPreview(QFrame):
             except Exception:
                 pass
             try:
-                # Remove the view from the viewer — releases the native window binding
                 self._display.View.Remove()
             except Exception:
                 pass
+            try:
+                self._display.Viewer.Remove()
+            except Exception:
+                pass
+        self._display = None
         self._inited = False
+        self._native_win = None
         self._display = None
 
     # ---- Mouse interaction ----

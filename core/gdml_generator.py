@@ -220,9 +220,9 @@ def generate_gdml(
 
     # ---- 4. build XML ----
     gdml = ET.Element("gdml", {
-        "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
-        "xsi:noNamespaceSchemaLocation":
-            "http://service-spi.web.cern.ch/service-spi/app/releases/GDML/schema/gdml.xsd",
+        "xmlns:gdml": "http://cern.ch/2001/Schemas/GDML",
+        "xmlns:xsi" : "http://www.w3.org/2001/XMLSchema-instance",
+        "xsi:noNamespaceSchemaLocation" : "gdml.xsd",
     })
 
     define_elem = ET.SubElement(gdml, "define")
@@ -294,11 +294,7 @@ def generate_gdml(
     for safe, vol_name, _ in part_info:
         pv = ET.SubElement(world_vol, "physvol")
         ET.SubElement(pv, "volumeref", {"ref": vol_name})
-        ET.SubElement(pv, "position", {
-            "name": f"{safe}_pos",
-            "unit": "mm",
-            "x": "0", "y": "0", "z": "0",
-        })
+        #ET.SubElement(pv, "position", {   "name": f"{safe}_pos",  "unit": "mm", "x": "0", "y": "0", "z": "0",})
 
     # ---- setup ----
     setup_el = ET.SubElement(gdml, "setup", {"name": "Default", "version": "1.0"})

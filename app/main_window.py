@@ -37,7 +37,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CAD2GDML - STEP to GDML Converter")
+        self.setWindowTitle("CAD2GDML - CAD to GDML Converter")
         self.resize(1600, 1000)
         self._dark_theme = True
 
