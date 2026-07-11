@@ -58,31 +58,57 @@ See the detailed installation guide at **[doc/installation.md](doc/installation.
 ## Project Structure
 
 ```
-  app/            — Application logic (main window, signal wiring)
-  core/           — Data models: GDataNode, GeoDataAgent, materials library
-  data/           — Material library data (element.xml, nist.txt)
-  doc/            — Documentation (installation, interference, algorithms)
-  fileio/         — File export (GDML, VTK — in progress)
-  mesh/           — Meshing subsystem
-    gmsh_dialog.py    — Parameter configuration dialog
-    mesh_runner.py    — GMSH background thread (QProcess + .geo scripts)
-    mesh_progress.py  — Non-blocking progress dialog
-    mesh_viewer.py    — VTK-based 3D mesh preview window
-  outputfile/     — Generated output files (VTK, MSH, GDML)
-  scripts/        — Utility scripts
-  ui/             — Qt widgets
-    toolbar.py        — Office-style ribbon toolbar (emoji icons)
-    project_tree.py   — Geometry hierarchy tree with visibility toggles
-    occ_widget.py     — PythonOCC 3D display widget
-    geo_param_widget.py — Property inspection panel
-  utils/          — AsyncLogger, TaskManager
-  gmsh/           — Place gmsh.exe here
-  _mesh_temp/     — Temporary meshing workspace (auto-cleaned)
-  environment.yml       — Minimal environment definition
-  environment_full.yml  — Full environment export
-  requirements.txt
-  main.py         — Application entry point
-  README.md       — This file
+  app/
+    main_window.py          — Application main window, signal/slot wiring
+  core/
+    cad_reader.py           — Multi-format CAD import (STEP/IGES/BREP/STL)
+    g_data_node.py          — Geometry data node tree model
+    geo_data_agent.py       — Geometry data agent for inter-module communication
+    gdml_generator.py       — GDML XML generation from meshed geometry
+    import_worker.py        — Background CAD import thread
+    lego_color_singleton.py — Lego-style color assignment for solids
+    materials_lib.py        — NIST + custom element/compound/mixture library
+  data/
+    element.xml             — Periodic table (103 elements)
+    nist.txt                — NIST material list
+  doc/
+    export_gdml.md          — GDML export guide
+    import_geometry.md      — CAD import guide
+    installation.md         — Installation guide
+    interference_dialog.md  — Interference check dialog usage
+    interference1_algorithm.md — Interference1 algorithm details
+    interference2_algorithm.md — Interference2 algorithm details
+    material_assignment.md  — Material assignment guide
+    mesh.md                 — Mesh generation guide
+    mesh_viewer.md          — Mesh viewer usage
+  fileio/                   — File I/O (placeholder)
+  gmsh/                     — Bundled gmsh.exe
+  mesh/
+    gmsh_dialog.py          — Mesh parameter configuration dialog
+    mesh_runner.py          — GMSH background thread (QProcess + .geo scripts)
+    mesh_progress.py        — Non-blocking mesh progress dialog
+    mesh_viewer.py          — VTK-based 3D mesh viewer (non-modal)
+  outputfile/               — Generated output files (VTK, MSH, GDML)
+  ui/
+    toolbar.py              — Office-style ribbon toolbar
+    project_tree.py         — Geometry hierarchy tree with visibility toggles
+    occ_widget.py           — PythonOCC 3D display widget
+    geo_param_widget.py     — Property inspection panel
+    import_progress.py      — Import progress dialog
+    assign_material_dialog.py   — Per-part & batch material assignment
+    local_material_dialog.py    — Custom element/compound/mixture editor
+    export_gdml_dialog.py       — GDML export configuration dialog
+    export_mesh_dialog.py       — Mesh file export dialog
+    interference_dialog.py      — Interference check dialog (OCC viewer)
+    interference_dialog_v2.py   — Interference check v2 (standalone)
+  utils/
+    logger.py               — Async logger with signal-slot
+    task_manager.py         — Background task lifecycle manager
+  _mesh_temp/               — Temporary meshing workspace (auto-cleaned)
+  environment.yml           — Minimal conda environment
+  environment_full.yml      — Full conda environment export
+  main.py                   — Application entry point
+  README.md                 — This file
 ```
 
 ---
