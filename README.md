@@ -12,14 +12,15 @@ CAD2GDML is a desktop GUI application that bridges CAD design and particle physi
 
 ### Features
 
-- **CAD Import** — Load `.step` / `.stp` / `.brep` assembly files with hierarchical tree structure (also supports `.iges` / `.igs` and `.stl` with limited functionality)
+- **CAD Import** — Load `.step` / `.stp` / `.brep` assembly files with hierarchical tree structure and cross-session accumulation (also supports `.iges` / `.igs` and `.stl` with limited functionality)
 - **3D CAD Viewer** — PythonOCC-powered interactive 3D display with Lego-colored solids
-- **GMSH Meshing** — Background mesh generation (non-blocking) with configurable parameters (algorithm, element size, smoothing, order)
-- **Mesh Preview** — Standalone VTK mesh viewer window with cube axes annotation (non-modal, non-blocking)
-- **GDML Export** — Convert meshed geometry to Geant4 GDML format *(in progress)*
-- **VTK Export** — Export generated mesh files *(in progress)*
+- **Interference Check** — Pairwise B-Rep interference detection with OBB pre-filtering, three-category classification (Safe / Contact / Hard), and two sampling modes (Fast / Full)
+- **Material Assignment** — Global and per-part material library with NIST reference materials, custom elements, compounds, and mixtures; batch assignment via multi-select
+- **GMSH Meshing** — Background mesh generation (non-blocking) with configurable parameters (algorithm, element size factor, smoothing steps, element order); adaptive sizing per bounding box
+- **Mesh Validation** — VTK-based mesh viewer with overlap extraction (Interference1) and distance heatmap tools
+- **GDML Export** — Convert meshed geometry to Geant4 GDML format with tessellated solids, world volume, and NIST/custom material handling
+- **VTK / MSH Export** — Export generated mesh files
 - **Dark/Light Theme** — Full application theme toggle
-- **Material Assignment** — Global and per-part material library *(in progress)*
 
 ### Supported Formats
 
@@ -115,39 +116,75 @@ See the detailed installation guide at **[doc/installation.md](doc/installation.
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        MainWindow                                 │
-│  ┌─────────┐ ┌──────────┐ ┌────────────┐ ┌───────────┐ ┌──────┐ │
-│  │ Toolbar │ │Project   │ │   OCC      │ │Interference│ │Prop  │ │
-│  │(Ribbon) │ │Tree      │ │  Viewer    │ │  Dialog   │ │Panel │ │
-│  └─────────┘ └──────────┘ └────────────┘ └───────────┘ └──────┘ │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │                      System Log                           │    │
-│  └──────────────────────────────────────────────────────────┘    │
-│                     +                                              │
-│  MeshRunner (QThread) → gmsh.exe → .vtk files                      │
-│                     +                                              │
-│  MeshViewer (QDialog) → QVTKRenderWindowInteractor                  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-All mesh generation runs in a background `QThread` to keep the UI responsive. The VTK mesh viewer opens as a non-modal dialog (like MATLAB figure popups), allowing interaction with the main window while viewing meshes.
-
-### Import Pipeline
+The software follows a pipeline-based architecture that processes CAD geometry through four stages: Import → Material → Mesh → Export.
 
 ```
-CAD File (.step/.stp/.brep/.iges/.igs/.stl)
+┌──────────────────────────────────────────────────────────────────────┐
+│                          MainWindow                                   │
+│  ┌──────────┐ ┌────────────┐ ┌────────────┐ ┌──────────┐ ┌───────┐ │
+│  │  Ribbon  │ │  Project   │ │    OCC     │ │Interfere │ │Property│ │
+│  │  Toolbar │ │   Tree     │ │  Viewer    │ │  Dialog  │ │ Panel  │ │
+│  └──────────┘ └────────────┘ └────────────┘ └──────────┘ └───────┘ │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                     System Log                                 │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────┘
+
+  Pipeline Stages (non-blocking, background threads):
+
+  ┌──────────┐    ┌──────────────┐    ┌──────────┐    ┌───────────┐
+  │  Import   │───▶│  Material    │───▶│   Mesh   │───▶│  Export   │
+  │  Worker   │    │  Assignment  │    │  Runner  │    │  Dialog   │
+  └──────────┘    └──────────────┘    └──────────┘    └───────────┘
+       │                 │                 │                 │
+       ▼                 ▼                 ▼                 ▼
+  CAD File→OCC    NIST / Custom       GMSH .exe         GDML XML
+   B-Rep tree     material lib        (QProcess)        tessellated
+```
+
+All mesh generation runs in a background `QThread` to keep the UI responsive. The file dialogs (material, mesh, export) open as non-modal dialogs.
+
+### Modules
+
+```
+                ┌───────────────────┐
+                │   app/main_window │  ← Signal/slot orchestration
+                └────────┬──────────┘
+                         │
+      ┌──────────────────┼──────────────────────┐
+      ▼                  ▼                      ▼
+┌──────────┐    ┌──────────────┐       ┌──────────────┐
+│   core/  │    │     ui/      │       │    mesh/     │
+│ data     │    │ Qt dialogs   │       │ GMSH process │
+│ models   │    │ OCC viewer   │       │ VTK viewer   │
+│ materials│    │ project tree │       │ mesh preview │
+└──────────┘    └──────────────┘       └──────────────┘
+                     │                       │
+                     ▼                       ▼
+              ┌──────────────┐       ┌──────────────┐
+              │ interference │       │  outputfile/  │
+              │  dialogs     │       │ .vtk/.msh/.gdml
+              └──────────────┘       └──────────────┘
+```
+
+### Processing Pipeline
+
+```
+STEP / IGES / BREP / STL
         │
         ▼
-   pythonocc-core (OCCT) — B-Rep or mesh data extraction
+   cad_reader.py — OCC B-Rep extraction
         │
         ▼
-   Project Tree (geometry hierarchy)
+   Project Tree — geometry hierarchy (GDataNode)
         │
-        ├──► OCC Viewer (3D display)
-        ├──► Interference Check (pairwise B-Rep distance)
-        └──► MeshRunner → GMSH → GDML / VTK Export
+        ├──► OCC Viewer (3D display, lego coloring)
+        ├──► Interference Check (OBB pre-filter + BRepExtrema)
+        ├──► Material Assignment (NIST library / custom composition)
+        ├──► MeshRunner → GMSH (.geo script → .vtk)
+        │       └──► MeshViewer (VTK 3D preview, validation tools)
+        └──► GDML Generator (tessellated solids → .gdml)
+                └──► Export dialog (world box, material config)
 ```
 
 ---
