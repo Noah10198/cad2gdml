@@ -2,31 +2,13 @@
 branches: {
   }
 fileChange:
-  /app:
-    newFile: !uuid '828f76e2e5bc3383ab86f88cc38b7047f8d2dad2'
-    oldFile: !uuid 'f3372e5b3413560689db09d507f5b1b710382aa9'
-  /app/main_window.py:
-    newFile: !uuid '89a6a4b1c85f7232b311f8c212be4be8732a6da3'
-    oldFile: !uuid '28b5a354dbe6731036987ebdfdeb2bab17541871'
-  /core:
-    newFile: !uuid '9053337bae0902e0d3ec5ab5f88598b42fac6495'
-    oldFile: !uuid 'ec9bbcb186d46464d448a9912f00ea186e7cdca6'
-  /core/gdml_generator.py:
-    newFile: !uuid 'dc09b3510aea85a3209db3cd27f461734f9b47b9'
-    oldFile: !uuid '3c58e6288383c230e7f42bdb200e249f6695ca16'
   /doc:
-    newFile: !uuid 'ebff960bb7f65e01b28953e1f86e311c2885bdba'
-    oldFile: !uuid '0befb6308ca61400cf326e30df7a0693068d3a6c'
-  /doc/interference_dialog.md:
-    newFile: !uuid 'f7bc4c9bbff36a6f3a45f64802fa81bcd565f268'
-    oldFile: !uuid '80cf974a923bf320ee6f0c3be47113ccc0cfd931'
-  /ui:
-    newFile: !uuid '426d8d144863af5e6df4a3033193d7a9068a2929'
-    oldFile: !uuid '25d37f50af588cc9cecb627964f585e66cbab585'
-  /ui/interference_dialog.py:
-    newFile: !uuid 'b15cee18c1d24874cb49559dc1713786271464bb'
-    oldFile: !uuid 'b06ca6c407f85d40fca6e32e0f2d1ffac16a4c91'
-gitCommitId: !uuid '7cd894cd58ba4f7654857eb82bb969a97369fea2'
+    newFile: !uuid 'bbf806f279c1ad263f6c4601273a220de659bbbc'
+    oldFile: !uuid 'ebff960bb7f65e01b28953e1f86e311c2885bdba'
+  /doc/mesh_viewer.md:
+    newFile: !uuid '33d8f52ceb8ed943f8550ec179c9820eea345fea'
+    oldFile: null
+gitCommitId: !uuid '3ad3abacac316c0df5dfce6a14e53c66409e34e8'
 renames: {
   }
-revisionId: 14
+revisionId: 15
