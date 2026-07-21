@@ -14,12 +14,15 @@ from PyQt6.QtGui import QIcon, QPixmap, QPainter, QFont, QColor
 
 
 def _create_emoji_icon(emoji: str, size: int = 36) -> QIcon:
-    """Render an emoji character onto a transparent pixmap and return as QIcon."""
-    pixmap = QPixmap(size, size)
+    """Render emoji at 2x resolution for supersampled crispness."""
+    scale = 2
+    px = size * scale
+    pixmap = QPixmap(px, px)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    font = QFont("Segoe UI Emoji", size - 8)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    font = QFont("Segoe UI Emoji", px - 24)
     painter.setFont(font)
     painter.setPen(QColor(220, 220, 220))
     _ = painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, emoji)
