@@ -100,9 +100,11 @@ class WidgetOCC(QWidget):
             try:
                 self._display.Create(window_handle=current_win_id, parent=self)
                 self._display.SetModeShaded()
-                self._display.View.SetBackgroundColor(
-                    Quantity_Color(0.12, 0.12, 0.18, Quantity_TOC_RGB)
-                )
+                if self._dark_bg:
+                    bg = Quantity_Color(0.12, 0.12, 0.18, Quantity_TOC_RGB)
+                else:
+                    bg = Quantity_Color(0.95, 0.95, 0.95, Quantity_TOC_RGB)
+                self._display.View.SetBackgroundColor(bg)
                 self._display.View.SetProj(1, 0, 1)
                 self._display.View.FitAll()
                 self._native_window_id = current_win_id
