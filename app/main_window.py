@@ -39,7 +39,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("CAD2GDML - CAD to GDML Converter")
         self.resize(1600, 1000)
-        self._dark_theme = True
+        self._dark_theme = False
 
         self._geo_agent = GeoDataAgent()
         self._library = MaterialsLib()
@@ -94,7 +94,7 @@ class MainWindow(QMainWindow):
         self._load_nist_materials()
 
         # Apply unified theme after all UI panels exist
-        self._apply_global_theme(True)
+        self._apply_global_theme(False)
         self._connect_signals()
         QTimer.singleShot(0, self._init_occ_display_deferred)
         self._logger.log_system("CAD2GDML application started")
@@ -179,13 +179,19 @@ class MainWindow(QMainWindow):
                 font-size: 12px; padding: 2px 8px; }}
         """)
 
+        # Sync all sub-widgets' theme state
+        if hasattr(self, '_toolbar'):
+            self._toolbar.set_dark_theme(dark)
+        if hasattr(self, '_project_tree'):
+            self._project_tree.set_dark_theme(dark)
+        if hasattr(self, '_param_widget'):
+            self._param_widget.set_dark_theme(dark)
+        if hasattr(self, '_occ_widget'):
+            self._occ_widget.set_dark_theme(dark)
+
     def _toggle_theme(self):
         new_dark = not self._dark_theme
         self._apply_global_theme(new_dark)
-        self._toolbar.set_dark_theme(new_dark)
-        self._project_tree.set_dark_theme(new_dark)
-        self._param_widget.set_dark_theme(new_dark)
-        self._occ_widget.set_dark_theme(new_dark)
         self._logger.log_system(f"Theme switched to {'dark' if new_dark else 'light'} mode")
 
     # ---- UI Init ----
@@ -252,7 +258,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._v_splitter)
         self.setCentralWidget(central)
-        self.showMaximized()
 
     def _init_status_bar(self):
         self._status_bar = self.statusBar()

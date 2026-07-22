@@ -66,9 +66,9 @@ class RibbonToolBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("RibbonToolBar")
-        self._dark_theme = True
+        self._dark_theme = False
         self._build_ui()
-        self._apply_theme(True)
+        self._apply_theme(False)
 
     def _build_ui(self):
         """Construct the horizontal button layout."""
