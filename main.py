@@ -12,8 +12,8 @@ import ctypes
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Suppress cosmetic Qt warnings on Windows (dark border, OpenGL, etc.)
-os.environ["QT_WIN_NEED_DARK_BORDER"] = "1"
+# Suppress cosmetic Qt warnings on Windows (OpenGL, etc.). The dark-border
+# noise itself is dropped by the Qt message handler installed in main().
 os.environ["QT_LOGGING_RULES"] = ("qt.qpa.windows.warning=false;"
                                   "qt.qpa.gl.warning=false;"
                                   "qt.qpa.eglfs.warning=false")
@@ -29,9 +29,28 @@ except Exception:
     pass
 
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import qInstallMessageHandler, QtMsgType, QMessageLogContext
 
 from app.main_window import MainWindow
 from utils.logger import AsyncLogger
+
+
+def _qt_message_filter(_msg_type: QtMsgType, _context: QMessageLogContext,
+                       message: str) -> None:
+    """Silence benign Qt platform noise on Windows.
+
+    Qt tries to give native title bars a dark border when a window's
+    background is dark (3D view / dark theme). On Windows builds where
+    DwmSetWindowAttribute is unavailable or called before the native window
+    exists it prints, per window/attempt:
+      QWindowsWindow::setDarkBorderToWindow: Unable to set dark window border.
+    It is cosmetic noise - the OS simply falls back to the normal border -
+    so the line is dropped. Everything else is forwarded to stderr.
+    """
+    text = str(message)
+    if "setDarkBorderToWindow" in text:
+        return
+    print(f"Qt: {text}", file=sys.stderr)
 
 
 def main():
@@ -46,6 +65,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("CAD2GDML")
     app.setApplicationVersion("2.0.0")
+    _ = qInstallMessageHandler(_qt_message_filter)
 
     # Create main window
     main_window = MainWindow()
