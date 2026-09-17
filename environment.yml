@@ -1,12 +1,23 @@
-name: pyoccenv
+name: easy2rad-env
 channels:
   - conda-forge
-  - defaults
+  - defaults          
+
 dependencies:
   - python=3.10
-  - pythonocc-core=7.9.0
-  - vtk=9.3.1
   - pip
+  - vtk=9.3.1=qt_*
+  - vtk-base=9.3.1=qt_*           
+  - pythonocc-core=7.9.0=all_*
+  - matplotlib
+  - numpy=2.2.6
+  - libblas=3.9.0=8_mkl
+  - libcblas=3.9.0=8_mkl
+  - liblapack=3.9.0=8_mkl
+
   - pip:
-    - PyQt6==6.4.2
-    - gmsh==4.14.1
+      - PyQt6==6.4.2
+      - PyQt6-Qt6==6.4.3   
+      - pyqtgraph
+      - colorlog
+      - contourpy  
