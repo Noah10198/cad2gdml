@@ -236,9 +236,11 @@ class AssignMaterialDialog(QDialog):
         global_names = self._mat_lib.get_nist_left_list()
         global_combo = QComboBox()
         global_combo.setPlaceholderText("Select global material...")
-        global_combo.addItem("")
         for name in global_names:
             global_combo.addItem(name)
+        # No blank first entry: clearing is handled by "Clear Material" below,
+        # and index -1 makes the placeholder show instead of an empty row.
+        global_combo.setCurrentIndex(-1)
         global_combo.currentTextChanged.connect(
             lambda txt, m=menu: (
                 self._on_global_selected(txt, assignable_rows,
@@ -254,9 +256,11 @@ class AssignMaterialDialog(QDialog):
         local_names = self._mat_lib.get_local_material_names()
         local_combo = QComboBox()
         local_combo.setPlaceholderText("Select local material...")
-        local_combo.addItem("")
         for name in sorted(local_names):
             local_combo.addItem(name)
+        # No blank first entry: clearing is handled by "Clear Material" below,
+        # and index -1 makes the placeholder show instead of an empty row.
+        local_combo.setCurrentIndex(-1)
         local_combo.currentTextChanged.connect(
             lambda txt, m=menu: (
                 self._on_local_selected(txt, assignable_rows,
@@ -279,11 +283,11 @@ class AssignMaterialDialog(QDialog):
         if not text:
             return
         local_cb.blockSignals(True)
-        local_cb.setCurrentIndex(0)
+        local_cb.setCurrentIndex(-1)
         local_cb.blockSignals(False)
         self._apply_material_to_rows(text, rows)
         global_cb.blockSignals(True)
-        global_cb.setCurrentIndex(0)
+        global_cb.setCurrentIndex(-1)
         global_cb.blockSignals(False)
 
     def _on_local_selected(self, text: str, rows: set,
@@ -291,11 +295,11 @@ class AssignMaterialDialog(QDialog):
         if not text:
             return
         global_cb.blockSignals(True)
-        global_cb.setCurrentIndex(0)
+        global_cb.setCurrentIndex(-1)
         global_cb.blockSignals(False)
         self._apply_material_to_rows(text, rows)
         local_cb.blockSignals(True)
-        local_cb.setCurrentIndex(0)
+        local_cb.setCurrentIndex(-1)
         local_cb.blockSignals(False)
 
     def _apply_material_to_rows(self, material_name: str, rows: set):

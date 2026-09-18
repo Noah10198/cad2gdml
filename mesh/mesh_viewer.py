@@ -724,6 +724,13 @@ class MeshViewer(QDialog):
                         intersect = vtkIntersectionPolyDataFilter()
                         intersect.SetInputData(0, dec_i.GetOutput())
                         intersect.SetInputData(1, dec_j.GetOutput())
+                        # Only the intersection lines (output port 0) are used.
+                        # The default split outputs walk the line graph in
+                        # Impl::GetSingleLoop(), whose `while (nextPt != startPt)`
+                        # can spin forever — see interference_panel.
+                        intersect.SetSplitFirstOutput(False)
+                        intersect.SetSplitSecondOutput(False)
+                        intersect.SetCheckMesh(False)
                         intersect.Update()
 
                         lines = intersect.GetOutput()
