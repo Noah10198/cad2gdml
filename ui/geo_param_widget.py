@@ -226,6 +226,19 @@ class GeoParamWidget(QWidget):
         self._current_node = node
         self._fresh_from_data_model()
 
+    def refresh_node(self, node) -> None:
+        """Re-read the fields if `node` is the one on display.
+
+        The box, centre and size are measured off the shape as it stands at the
+        moment of the read, so a part that has been moved since the last read
+        has to be measured again -- otherwise the panel goes on describing where
+        it used to be. That read is not cheap, so it only happens on demand: on
+        selection here, and on the placement that is kept (see
+        MainWindow._slot_edit_transform).
+        """
+        if node is not None and self._current_node is node:
+            self._fresh_from_data_model()
+
     def _fresh_from_data_model(self):
         """Refresh all property fields from the current node."""
         if self._current_node is None:

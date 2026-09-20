@@ -62,6 +62,7 @@ class ProjectTreeWidget(QWidget):
     save_local_materials_requested = pyqtSignal()
     load_local_materials_requested = pyqtSignal()
     delete_geometry_requested = pyqtSignal(str)  # entry_id of file node to delete
+    edit_transform_requested = pyqtSignal(str)  # entry_id of file node to place
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -208,8 +209,15 @@ class ProjectTreeWidget(QWidget):
         # Right-click on a top-level imported geometry item (direct child of Geometry root)
         if item.type() == TREE_ITEM_TYPE['GEO_ROOT'] and item.parent() is self._geometry_root:
             menu = QMenu(self)
-            del_action = menu.addAction("❌ Delete Geometry")
             entry_id = item.get_entry_id()
+            # Placement before deletion: a file is placed as a whole, so this
+            # belongs to the file row and to no row under it. The order is
+            # deliberate -- the destructive entry stays at the bottom.
+            edit_action = menu.addAction("✏️ Edit Transform...")
+            edit_action.triggered.connect(
+                lambda: self.edit_transform_requested.emit(entry_id))
+            menu.addSeparator()
+            del_action = menu.addAction("❌ Delete Geometry")
             del_action.triggered.connect(
                 lambda: self.delete_geometry_requested.emit(entry_id))
             menu.exec(self._tree.viewport().mapToGlobal(pos))

@@ -28,6 +28,8 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from OCC.Core.gp import gp_Pnt
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
+from utils.occ_quiet import new_viewer
+
 from core.g_data_node import GDataNode
 from core.materials_lib import MaterialsLib
 from core.gdml_generator import compute_global_bbox, generate_gdml
@@ -93,8 +95,7 @@ class _GDMLPreview(QFrame):
         if self._inited and self._native_win == wid:
             return True
         try:
-            self._display = OCCViewer.Viewer3d()
-            self._display.Create(window_handle=wid, parent=self)
+            self._display = new_viewer(wid, self)
             self._display.SetModeShaded()
             self._display.View.SetBackgroundColor(
                 Quantity_Color(0.08, 0.08, 0.12, Quantity_TOC_RGB)
@@ -214,7 +215,8 @@ class _GDMLPreview(QFrame):
 class ExportGdmlDialog(QDialog):
     """Non-modal dialog for GDML export configuration."""
 
-    FACTORS = [3, 5, 10, 100]
+    FACTORS = [1, 2, 3, 5, 10, 100]
+    DEFAULT_FACTOR = 3
     DEFAULT_WORLD_MATS = ["G4_AIR", "G4_Galactic"]
 
     def __init__(
@@ -267,7 +269,8 @@ class ExportGdmlDialog(QDialog):
         self._factor_combo = QComboBox()
         for f in self.FACTORS:
             self._factor_combo.addItem(f"× {f}", f)
-        self._factor_combo.setCurrentIndex(1)  # default ×5
+        default_idx = self._factor_combo.findData(self.DEFAULT_FACTOR)
+        self._factor_combo.setCurrentIndex(default_idx if default_idx >= 0 else 0)
         self._factor_combo.currentIndexChanged.connect(self._on_factor_changed)
         factor_layout.addWidget(self._factor_combo)
         right_panel.addLayout(factor_layout)

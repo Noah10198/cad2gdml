@@ -73,6 +73,7 @@ See the detailed installation guide at **[doc/installation.md](doc/installation.
     element.xml             — Periodic table (103 elements)
     nist.txt                — NIST material list
   doc/
+    assembly_fragment_gdml.md — Conformal (BooleanFragments) meshing + GDML plan
     export_gdml.md          — GDML export guide
     import_geometry.md      — CAD import guide
     installation.md         — Installation guide

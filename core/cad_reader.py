@@ -108,11 +108,16 @@ class CADReader:
 
         # Bulk transfer — one fast call, much cheaper than per-root loops
         reader.TransferRoots()
-        for i in range(1, reader.NbShapes() + 1):
+        nb_shapes = reader.NbShapes()
+        for i in range(1, nb_shapes + 1):
             shape = reader.Shape(i)
             if shape.IsNull():
                 continue
             self._add_shape_to_node(shape, file_node, file_name, i)
+            # Keep the caller's progress box alive while the tree is built:
+            # this loop is where most of the wall-clock time goes on big files.
+            if progress_callback is not None:
+                progress_callback(i, nb_shapes)
 
         # Report progress once with all leaf nodes for rendering
         if progress_callback is not None:

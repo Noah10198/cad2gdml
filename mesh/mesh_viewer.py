@@ -5,12 +5,15 @@ clipping plane (B), Interference1 (C), Interference2 (E), and distance map (D).
 Uses QVTKRenderWindowInteractor (QOpenGLWidget) for proper OpenGL context.
 """
 
+import csv
 import os
 from typing import Optional, List, Dict, Tuple, Set
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QComboBox, QSlider, QWidget, QButtonGroup, QProgressDialog, QApplication,
+    QAbstractItemView, QFileDialog, QHeaderView, QMessageBox, QTableWidget,
+    QTableWidgetItem,
 )
 from PyQt6.QtCore import Qt
 
@@ -34,6 +37,117 @@ from vtkmodules.vtkCommonCore import vtkLookupTable, vtkDoubleArray, vtkObject
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 import vtkmodules.vtkRenderingOpenGL2
 import vtkmodules.vtkInteractionStyle
+
+
+# ---- Per-part parameter report ----
+# One definition of the columns: the dialog shows these and the CSV writes these,
+# so the file cannot drift from what was on screen.
+_COLUMNS = ("Part", "Unit", "Parts", "Algorithm", "Elem Factor", "Min Factor",
+            "Max Factor", "Smoothing", "Order", "Mode", "Mesh File")
+_PARAM_KEYS = ("algorithm", "elem_factor", "mesh_min_factor", "mesh_max_factor",
+               "smoothing", "element_order", "mode")
+_MODE_TEXT = {"auto": "Auto", "assembly": "Assembly conformal",
+              "per_solid": "Per-solid", None: "Auto"}
+
+
+def _fmt(value) -> str:
+    return f"{float(value):g}" if isinstance(value, (int, float)) else str(value)
+
+
+def _param_key(params: dict) -> tuple:
+    """Identity of a parameter set, for "do these parts share one?"."""
+    return tuple(str(params.get(k)) for k in _PARAM_KEYS)
+
+
+def _row_cells(row: dict) -> List[str]:
+    """One report row as the table and the CSV both show it.
+
+    Mode is resolved, not copied: "auto" is the absence of a choice, and a part
+    in a unit of one is meshed per-solid whatever the record says.
+    """
+    p = row.get("params") or {}
+    mode = p.get("mode")
+    if mode in (None, "auto"):
+        mode = "assembly" if int(row.get("unit_parts") or 1) > 1 else "per_solid"
+    return [
+        str(row.get("part", "")),
+        str(row.get("unit", "")),
+        str(row.get("unit_parts", "")),
+        str(p.get("algorithm", "?")),
+        _fmt(p.get("elem_factor", "?")),
+        _fmt(p.get("mesh_min_factor", "?")),
+        _fmt(p.get("mesh_max_factor", "?")),
+        str(p.get("smoothing", "?")),
+        str(p.get("element_order", "?")),
+        _MODE_TEXT.get(mode, str(mode)),
+        str(row.get("file", "")),
+    ]
+
+
+class _PartParamsDialog(QDialog):
+    """Which part was meshed with what -- and the CSV of exactly that.
+
+    Opened from the preview because that is where the question is asked: the
+    window shows the meshes, and "made with which numbers?" is the next thing
+    a reader wants, most of all when the run gave its units different ones.
+    """
+
+    def __init__(self, rows: List[dict], parent: Optional['QWidget'] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Mesh Parameters per Part")
+        self.setMinimumSize(820, 420)
+        self.setModal(True)
+        self._rows = rows
+
+        self._table = QTableWidget(len(rows), len(_COLUMNS), self)
+        self._table.setHorizontalHeaderLabels(list(_COLUMNS))
+        self._table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setAlternatingRowColors(True)
+        for r, row in enumerate(rows):
+            for c, text in enumerate(_row_cells(row)):
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
+                self._table.setItem(r, c, item)
+        self._table.resizeColumnsToContents()
+        self._table.horizontalHeader().setSectionResizeMode(
+            len(_COLUMNS) - 1, QHeaderView.ResizeMode.Stretch)
+
+        self._status = QLabel(f"{len(rows)} meshed part(s)")
+        btn_csv = QPushButton("Export CSV…")
+        btn_csv.setToolTip("Write this table to a CSV file")
+        btn_csv.clicked.connect(self._export_csv)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+
+        foot = QHBoxLayout()
+        foot.addWidget(self._status, 1)
+        foot.addWidget(btn_csv)
+        foot.addWidget(btn_close)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._table, 1)
+        layout.addLayout(foot)
+
+    def _export_csv(self) -> None:
+        """utf-8-sig, so a spreadsheet reads the part names as they are."""
+        start = os.path.join(os.getcwd(), "mesh_parameters.csv")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export mesh parameters", start, "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(_COLUMNS)
+                for row in self._rows:
+                    writer.writerow(_row_cells(row))
+        except OSError as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+        self._status.setText(f"Exported {len(self._rows)} row(s) to {path}")
 
 
 class MeshViewer(QDialog):
@@ -84,6 +198,10 @@ class MeshViewer(QDialog):
         # ---- Mesh parameters overlay ----
         self._mesh_params: Optional[dict] = None
         self._params_annotation: Optional[vtkCornerAnnotation] = None
+        # One report row per meshed part (see scope.part_param_rows): the values
+        # behind each mesh, which is what the overlay has to summarise and the
+        # table has to list.
+        self._part_rows: List[dict] = []
 
         # ---- E. Interference2 state (IntersectionPolyDataFilter-based) ----
         self._i2_actors: List[vtkActor] = []
@@ -152,6 +270,15 @@ class MeshViewer(QDialog):
         self._btn_distance.setToolTip("Toggle distance heatmap")
         self._btn_distance.clicked.connect(self._toggle_distance_map)
         toolbar.addWidget(self._btn_distance)
+
+        # A run can give each unit its own numbers, so the parameters are per
+        # part and cannot be read off one corner box any more.
+        self._btn_params = QPushButton("☰ Params")
+        self._btn_params.setToolTip(
+            "Which part was meshed with which parameters — table and CSV export")
+        self._btn_params.setEnabled(False)
+        self._btn_params.clicked.connect(self._show_params_table)
+        toolbar.addWidget(self._btn_params)
 
         btn_fit = QPushButton("⌂ Fit All")
         btn_fit.setToolTip("Reset camera")
@@ -279,11 +406,24 @@ class MeshViewer(QDialog):
     # ================================================================
 
     def load_mesh(self, mesh_paths: Dict[str, str],
-                  mesh_params: Optional[dict] = None):
+                  mesh_params: Optional[dict] = None,
+                  title: Optional[str] = None,
+                  part_rows: Optional[List[dict]] = None):
+        """`title` names the window: several previews are opened at once on
+        purpose (side by side), and three windows all called "Mesh Preview"
+        cannot be told apart once the title bar is all that is visible.
+
+        `part_rows` is the per-part parameter report (scope.part_param_rows).
+        `mesh_params` is only the fallback for a caller that has no report.
+        """
+        if title:
+            self.setWindowTitle(title)
         self._mesh_paths = list(mesh_paths.values())
         self._mesh_names = list(mesh_paths.keys())
         if mesh_params is not None:
             self._mesh_params = mesh_params
+        self._part_rows = list(part_rows or [])
+        self._btn_params.setEnabled(bool(self._part_rows))
         self._update_params_text()
         self._render_mesh_multi()
 
@@ -292,31 +432,61 @@ class MeshViewer(QDialog):
         self._mesh_names = [os.path.basename(p) for p in file_paths]
         self._render_mesh_multi()
 
+    def _params_by_part(self) -> List[dict]:
+        """The values behind what is on screen: the report, or the one set."""
+        if self._part_rows:
+            return [row.get("params") or {} for row in self._part_rows]
+        return [self._mesh_params] if self._mesh_params else []
+
     def _update_params_text(self):
-        """Refresh the corner-annotation overlay from self._mesh_params."""
+        """The corner overlay: what these meshes were made with.
+
+        One set is only the truth while every part shares it. Now that a run can
+        give each unit its own numbers, the box either prints the one set there
+        is or says how many there are and points at the table -- printing the
+        first set over all of them is what made it wrong.
+        """
         if self._params_annotation is None:
             return
-        if self._mesh_params is None:
-            self._params_annotation.SetText(2, "")
-            return
 
-        p = self._mesh_params
-        alg = p.get("algorithm", "?")
-        elem = p.get("elem_factor", "?")
-        mn = p.get("mesh_min_factor", "?")
-        mx = p.get("mesh_max_factor", "?")
-        smooth = p.get("smoothing", "?")
-        order = p.get("element_order", "?")
+        sets: List[dict] = []
+        seen = set()
+        for p in self._params_by_part():
+            key = _param_key(p)
+            if key not in seen:
+                seen.add(key)
+                sets.append(p)
 
-        lines = [
-            "Gmsh Parameters",
-            f"  Algorithm: {alg}",
-            f"  Order: {order}  |  Smooth: {smooth}",
-            f"  Elem Factor: {elem}",
-            f"  Min/Max: {mn} / {mx}",
-        ]
-        self._params_annotation.SetText(2, "\n".join(lines))
+        if not sets:
+            text = ""
+        elif len(sets) == 1:
+            text = "\n".join(self._param_lines(sets[0]))
+        else:
+            text = "\n".join((
+                "Gmsh Parameters",
+                f"  {len(sets)} different set(s) over "
+                f"{len(self._part_rows)} part(s)",
+                "  per part: ☰ Params",
+            ))
+        self._params_annotation.SetText(2, text)
         self._render_window.Render()
+
+    @staticmethod
+    def _param_lines(p: dict) -> List[str]:
+        return [
+            "Gmsh Parameters",
+            f"  Algorithm: {p.get('algorithm', '?')}",
+            f"  Order: {p.get('element_order', '?')}  "
+            f"|  Smooth: {p.get('smoothing', '?')}",
+            f"  Elem Factor: {p.get('elem_factor', '?')}",
+            f"  Min/Max: {p.get('mesh_min_factor', '?')} / "
+            f"{p.get('mesh_max_factor', '?')}",
+        ]
+
+    def _show_params_table(self):
+        if not self._part_rows:
+            return
+        _PartParamsDialog(self._part_rows, self).exec()
 
     # ================================================================
     #  Rendering — one actor per mesh

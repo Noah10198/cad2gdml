@@ -47,6 +47,8 @@ class GDataNode(QObject):
         self._node_type = node_type
         self._name = name
         self._shape: Optional[TopoDS_Shape] = None
+        self._base_shape: Optional[TopoDS_Shape] = None
+        self._transform = None
         self._ais_shape: Optional[AIS_Shape] = None
         self._color: Optional[Quantity_Color] = None
         self._entry_id: str = ""
@@ -91,6 +93,29 @@ class GDataNode(QObject):
     @ais_shape.setter
     def ais_shape(self, val: Optional[AIS_Shape]):
         self._ais_shape = val
+
+    @property
+    def base_shape(self) -> Optional[TopoDS_Shape]:
+        """导入时的形状，未施加任何位移。
+
+        只有文件节点的 transform 会用到它（core/node_transform.py）：重新
+        编辑摆放时要从这个原始形状重新算，而不是在上一次结果上叠加，这样
+        对话框里的数字始终表示"当前摆放"，Reset 也才是真的归零。
+        """
+        return self._base_shape
+
+    @base_shape.setter
+    def base_shape(self, val: Optional[TopoDS_Shape]):
+        self._base_shape = val
+
+    @property
+    def transform(self):
+        """该文件节点的整体摆放（TransformSpec），未移动过则为 None。"""
+        return self._transform
+
+    @transform.setter
+    def transform(self, val):
+        self._transform = val
 
     @property
     def color(self) -> Optional[Quantity_Color]:

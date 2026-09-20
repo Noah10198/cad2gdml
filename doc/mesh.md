@@ -33,8 +33,8 @@ Clicking **Mesh** opens the **Mesh Generation Parameters** dialog:
 |-----------|------|---------|-------------|
 | **Algorithm** | Combo | Frontal-Delaunay | Meshing algorithm: MeshAdapt (1), Automatic (2), Delaunay (5), Frontal-Delaunay (6) |
 | **Element Size Factor** | Double | 1.0 | Global characteristic length factor — smaller = finer mesh |
-| **Mesh Min Factor** | Double | 5.0 | Minimum element size = bounding box diagonal / this factor |
-| **Mesh Max Factor** | Double | 6.0 | Maximum element size = bounding box diagonal / this factor |
+| **Mesh Min Factor** | Double | 6.0 | Minimum element size = bounding box diagonal / this factor (must be >= Max Factor) |
+| **Mesh Max Factor** | Double | 5.0 | Maximum element size = bounding box diagonal / this factor |
 | **Smoothing Steps** | Integer | 1 | Number of mesh smoothing iterations (0–100) |
 | **Element Order** | Combo | 1st Order | 1st Order (linear) or 2nd Order (quadratic) elements |
 

@@ -17,7 +17,6 @@ from PyQt6.QtGui import QPaintEngine
 from OCC.Display.backend import load_backend
 load_backend("pyqt6")
 
-from OCC.Display import OCCViewer
 from OCC.Core.AIS import (
     AIS_InteractiveContext, AIS_Shape, AIS_Shaded, AIS_WireFrame,
     AIS_Point, AIS_TextLabel
@@ -27,7 +26,8 @@ from OCC.Core.gp import gp_Pnt
 from OCC.Core.Quantity import (
     Quantity_Color, Quantity_NOC_RED, Quantity_NOC_GREEN,
     Quantity_NOC_BLUE1, Quantity_NOC_GRAY, Quantity_NOC_GOLD,
-    Quantity_NOC_BLACK, Quantity_NOC_WHITE, Quantity_TOC_RGB
+    Quantity_NOC_BLACK, Quantity_NOC_WHITE, Quantity_NOC_YELLOW,
+    Quantity_TOC_RGB
 )
 from OCC.Core.Graphic3d import (
     Graphic3d_GraduatedTrihedron
@@ -35,18 +35,28 @@ from OCC.Core.Graphic3d import (
 from OCC.Core.Aspect import Aspect_TOTP_LEFT_LOWER
 from OCC.Core.V3d import V3d_ZBUFFER
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
-from OCC.Core.TopoDS import TopoDS_Compound
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 from OCC.Core.BRep import BRep_Builder
 from OCC.Core.Prs3d import Prs3d_LineAspect
 from OCC.Core.Aspect import Aspect_TOL_SOLID
 
 from core.materials_lib import MaterialsLib
+from utils.occ_quiet import new_viewer, occ_quiet
 
 
 class ViewMode:
     """View display mode constants."""
     WIRE = 0
     SOLID = 1
+
+
+# How a highlighted object is drawn (see WidgetOCC.highlight_shapes).
+# The colour is painted onto the shapes rather than handed to OCCT's own
+# highlight: that one only redraws the object's edges, which on a shaded,
+# half-transparent model is invisible whatever colour it is given.
+# These two values are the whole tuning surface.
+HIGHLIGHT_COLOR = Quantity_Color(Quantity_NOC_YELLOW)
+HIGHLIGHT_TRANSPARENCY = 0.0
 
 
 class WidgetOCC(QWidget):
@@ -59,11 +69,13 @@ class WidgetOCC(QWidget):
         self._library = library
         self._dark_bg = True
 
-        self._display = OCCViewer.Viewer3d()
+        self._display = new_viewer()
         self._inited = False
         self._native_window_id: Optional[int] = None
 
         self._displayed_shapes: Dict[str, AIS_Shape] = {}
+        self._highlight_backup: Optional[Tuple[AIS_Shape, Quantity_Color,
+                                               float]] = None
 
         self._view_operation = 0
         self._last_mouse_pos: Optional[QPoint] = None
@@ -72,6 +84,10 @@ class WidgetOCC(QWidget):
         self._axis_origin: Optional[AIS_Point] = None
         self._axis_origin_lines: List[AIS_Shape] = []
         self._axis_origin_label: Optional[AIS_TextLabel] = None
+        # The graduated trihedron (the ruler in the corner) and whether it is
+        # meant to be on screen -- see set_trihedron_visible.
+        self._trihedron = None
+        self._trihedron_visible = True
 
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_PaintOnScreen)
@@ -87,6 +103,11 @@ class WidgetOCC(QWidget):
             current_win_id = int(self.winId())
         except Exception:
             return False
+        if self._display is None:
+            # shutdown() released the viewer; recreate it so the widget can be
+            # revived instead of raising on a dead reference.
+            self._display = new_viewer()
+            self._inited = False
         needs_reinit = False
         if self._inited:
             if self._native_window_id != current_win_id:
@@ -98,7 +119,15 @@ class WidgetOCC(QWidget):
                     needs_reinit = True
         if needs_reinit or not self._inited:
             try:
-                self._display.Create(window_handle=current_win_id, parent=self)
+                was_inited = self._inited
+                with occ_quiet():
+                    self._display.Create(
+                        window_handle=current_win_id, parent=self,
+                        display_glinfo=False)
+                if not was_inited:
+                    # The main viewport reports the OpenGL capabilities it runs
+                    # on, once, on the real console; every later one stays quiet.
+                    self._display.GlInfo()
                 self._display.SetModeShaded()
                 if self._dark_bg:
                     bg = Quantity_Color(0.12, 0.12, 0.18, Quantity_TOC_RGB)
@@ -226,12 +255,13 @@ class WidgetOCC(QWidget):
             trihedron = Graphic3d_GraduatedTrihedron()
             trihedron.SetArrowsLength(0.1)
             trihedron.SetGridColor(Quantity_Color(Quantity_NOC_GRAY))
-            trihedron.SetDrawGrid(True)
-            trihedron.SetDrawAxes(True)
+            trihedron.SetDrawGrid(self._trihedron_visible)
+            trihedron.SetDrawAxes(self._trihedron_visible)
             trihedron.SetNamesFont("Arial")
             trihedron.SetNamesSize(20)
             trihedron.SetValuesFont("Arial")
             trihedron.SetValuesSize(16)
+            self._trihedron = trihedron
             self.View.GraduatedTrihedronDisplay(trihedron)
             self.Context.UpdateCurrentViewer()
         except Exception as e:
@@ -316,6 +346,31 @@ class WidgetOCC(QWidget):
         except Exception as e:
             print(f"[OCC] add_shape error: {e}", flush=True)
 
+    def update_shape(self, ais_shape: AIS_Shape, new_shape: TopoDS_Shape,
+                     update: bool = True) -> bool:
+        """Show a different shape under the same AIS object.
+
+        The object keeps everything that is not geometry -- colour,
+        transparency, display mode -- which is why the model transform goes
+        through here instead of erasing and re-adding: the part keeps the colour
+        it was given. False means this object would not take the new shape, and
+        the caller should fall back to a fresh AIS_Shape (see
+        MainWindow._replace_displayed_shape).
+        """
+        if ais_shape is None or new_shape is None:
+            return False
+        if not self._ensure_display_valid():
+            return False
+        try:
+            ais_shape.SetShape(new_shape)
+            self.Context.Redisplay(ais_shape, not update)
+            if update:
+                self.Context.UpdateCurrentViewer()
+            return True
+        except Exception as e:
+            print(f"[OCC] update_shape error: {e}", flush=True)
+            return False
+
     def remove_shape(self, ais_shape: AIS_Shape, update: bool = True):
         if ais_shape is None:
             return
@@ -360,6 +415,11 @@ class WidgetOCC(QWidget):
             return
         if not self._ensure_display_valid():
             return
+        # Forget this shape's highlight backup: it holds the colour that is
+        # being replaced right now, so restoring it later would undo this call.
+        if self._highlight_backup is not None \
+                and self._highlight_backup[0] is ais_shape:
+            self._highlight_backup = None
         try:
             ais_shape.SetColor(color)
             self.Context.UpdateCurrentViewer()
@@ -382,6 +442,27 @@ class WidgetOCC(QWidget):
         except Exception:
             pass
 
+    def set_trihedron_visible(self, visible: bool):
+        """Show or hide the graduated trihedron -- the ruler in the corner.
+
+        Its tick values and grid pitch are rebuilt by OCCT from the bounding box
+        of everything on screen, on every redraw, so anything that moves the
+        model makes it climb to another scale. V3d_View has no "hide" for it, so
+        the same trihedron is put back with nothing left to draw. Used to hold it
+        still while the transform dialog previews, and to let it settle again on
+        the placement that is kept (see MainWindow._slot_edit_transform).
+        """
+        self._trihedron_visible = visible
+        if self._trihedron is None or not self._ensure_display_valid():
+            return
+        try:
+            self._trihedron.SetDrawAxes(visible)
+            self._trihedron.SetDrawGrid(visible)
+            self.View.GraduatedTrihedronDisplay(self._trihedron)
+            self.Context.UpdateCurrentViewer()
+        except Exception as e:
+            print(f"[OCC] set_trihedron_visible error: {e}", flush=True)
+
     def set_view_mode(self, mode: int):
         if not self._ensure_display_valid():
             return
@@ -393,18 +474,42 @@ class WidgetOCC(QWidget):
             pass
 
     def highlight_shape(self, ais_shape: AIS_Shape):
-        if ais_shape is None:
+        """Paint one shape in HIGHLIGHT_COLOR, remembering the look it had.
+
+        The colour is set on the shape itself instead of going through OCCT's
+        selection: on this build a selected object is only redrawn with its
+        edges recoloured, which is impossible to spot on a shaded part -- and
+        the parts here are half transparent on top of that.
+        """
+        if ais_shape is None or not self._ensure_display_valid():
             return
-        if not self._ensure_display_valid():
+        self.clear_highlight()
+        try:
+            # AIS_Shape.Color() only answers through an output parameter.
+            was = Quantity_Color()
+            ais_shape.Color(was)
+            self._highlight_backup = (ais_shape, was, ais_shape.Transparency())
+            ais_shape.SetColor(HIGHLIGHT_COLOR)
+            ais_shape.SetTransparency(HIGHLIGHT_TRANSPARENCY)
+            self.Context.UpdateCurrentViewer()
+        except Exception:
+            self.clear_highlight()
+
+    def clear_highlight(self):
+        """Put the highlighted shape back to the look it had."""
+        backup, self._highlight_backup = self._highlight_backup, None
+        if backup is None:
             return
         try:
-            self.Context.ClearSelected(True)
-            self.Context.SetSelected(ais_shape, False)
+            ais_shape, color, transparency = backup
+            ais_shape.SetColor(color)
+            ais_shape.SetTransparency(transparency)
             self.Context.UpdateCurrentViewer()
         except Exception:
             pass
 
     def clear_selection(self):
+        self.clear_highlight()
         if not self._ensure_display_valid():
             return
         try:
