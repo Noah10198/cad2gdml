@@ -1,0 +1,29 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- ===== 立方体（精确填满 256×256） ===== -->
+  <g stroke="#000" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <polygon points="128,1.5 254.5,64.75 128,128 1.5,64.75" fill="#B3E5FC"/>
+    <polygon points="1.5,64.75 128,128 128,254.5 1.5,191.25" fill="#4FC3F7"/>
+    <polygon points="128,128 254.5,64.75 254.5,191.25 128,254.5" fill="#0288D1"/>
+  </g>
+
+  <!-- ===== 小三角面片（顶部顶点左右居中，整体对称） ===== -->
+  <g stroke="#000" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round">
+    <!-- 6 个彩色区域 -->
+    <polygon points="191.25,132 159.625,193.25 191.25,193.25" fill="#FFA07A"/>
+    <polygon points="191.25,132 191.25,193.25 222.875,193.25" fill="#FF8C5A"/>
+    <polygon points="159.625,193.25 128,254.5 191.25,193.25" fill="#B19CD9"/>
+    <polygon points="222.875,193.25 191.25,193.25 254.5,254.5" fill="#9B86C9"/>
+    <polygon points="128,254.5 191.25,193.25 191.25,254.5" fill="#A9A9A9"/>
+    <polygon points="191.25,193.25 254.5,254.5 191.25,254.5" fill="#909090"/>
+
+    <!-- 网格线 -->
+    <line x1="159.625" y1="193.25" x2="222.875" y2="193.25"/>
+    <line x1="191.25" y1="132" x2="191.25" y2="193.25"/>
+    <line x1="128" y1="254.5" x2="191.25" y2="193.25"/>
+    <line x1="254.5" y1="254.5" x2="191.25" y2="193.25"/>
+    <line x1="191.25" y1="193.25" x2="191.25" y2="254.5"/>
+
+    <!-- 外框加粗 -->
+    <polygon points="191.25,132 128,254.5 254.5,254.5" fill="none" stroke-width="3"/>
+  </g>
+</svg>
