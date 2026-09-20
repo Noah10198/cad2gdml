@@ -22,8 +22,11 @@ per-solid meshing**, and the result is marked "non-conformal" so the export
 dialog can gate it.
 """
 
+import ctypes
+import functools
 import os
 import re
+import sys
 import time
 from typing import List, Optional, Tuple
 
@@ -94,6 +97,65 @@ _OVERLAP_BUDGET = 400_000
 _MAX_OVERLAP_PAIRS = 8
 
 
+# ---- gmsh liveness --------------------------------------------------------
+# A gmsh job that prints nothing is not necessarily a stuck one: during the 2D
+# solve it stays quiet for a minute or more while still burning CPU. Sampling
+# the CPU time of the process itself is what tells the two apart, so the dialog
+# can say how long ago gmsh was last seen working instead of leaving a frozen
+# bar and a frozen log, which look exactly like a wedged process.
+#
+# Windows only, and strictly best-effort: anything that cannot be read returns
+# None. A missing heartbeat only costs that one piece of information -- it must
+# never turn into a "stalled" verdict.
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+@functools.lru_cache(maxsize=1)
+def _kernel32():
+    """kernel32 with the signatures spelled out.
+
+    The default c_int return type truncates the 64-bit HANDLE returned by
+    OpenProcess; the truncated value is then rejected by GetProcessTimes on
+    some machines and accepted on others, which is the kind of failure that
+    cannot be reproduced.
+    """
+    from ctypes import wintypes
+    lib = ctypes.WinDLL("kernel32", use_last_error=True)
+    lib.OpenProcess.restype = wintypes.HANDLE
+    lib.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    lib.GetProcessTimes.restype = wintypes.BOOL
+    lib.GetProcessTimes.argtypes = (wintypes.HANDLE,
+                                    *[ctypes.POINTER(wintypes.FILETIME)] * 4)
+    lib.CloseHandle.argtypes = (wintypes.HANDLE,)
+    return lib
+
+
+def process_cpu_seconds(pid: int) -> Optional[float]:
+    """Total CPU seconds burnt by `pid`, or None when it cannot be read."""
+    if sys.platform != "win32" or not pid:
+        return None
+    try:
+        from ctypes import wintypes
+        lib = _kernel32()
+        handle = lib.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False,
+                                 int(pid))
+        if not handle:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            got = lib.GetProcessTimes(handle, *(ctypes.byref(t) for t in times))
+            if not got:
+                return None
+            # Kernel + user time; FILETIME counts 100 ns units.
+            return sum((t.dwHighDateTime << 32) | t.dwLowDateTime
+                       for t in times[2:]) / 1e7
+        finally:
+            lib.CloseHandle(handle)
+    except Exception:
+        return None
+
+
 # ---- Auto-detect gmsh.exe ----
 
 def find_gmsh_exe() -> Optional[str]:
@@ -122,6 +184,10 @@ class MeshRunner(QThread):
     """Generate meshes for geometry nodes using gmsh.exe in background."""
 
     progress_updated = pyqtSignal(int, str)
+    # (elapsed, idle) in seconds for the running gmsh job. Both the bar and the
+    # log sit still while one solid is being meshed, so this is what proves the
+    # job is still working.
+    heartbeat = pyqtSignal(float, float)
     log_emitted = pyqtSignal(str)
     finished_with_result = pyqtSignal(bool, dict, str)
     # Stage indicator: assembly mode is [Contact analysis / Boolean fragment /
@@ -293,15 +359,11 @@ class MeshRunner(QThread):
                 self.progress_updated.emit(pct + 3, f"Running GMSH on {node_label}...")
                 self.log_emitted.emit(f"  Generating mesh for {node_label} ...")
 
-                # 4. Launch gmsh.exe with the .geo script
-                ok, gmsh_stdout, stop_reason = self._run_gmsh(geo_file)
+                # 4. Launch gmsh.exe with the .geo script. Its output is
+                #    forwarded line by line while it runs, so only the verdict
+                #    is left to report here.
+                ok, _stdout, stop_reason = self._run_gmsh(geo_file)
 
-                # 5. Forward GMSH output to log
-                if gmsh_stdout:
-                    for line in gmsh_stdout.split("\n"):
-                        line = line.strip()
-                        if line:
-                            self.log_emitted.emit(f"  [GMSH] {line}")
                 if stop_reason:
                     self.log_emitted.emit(
                         f"  [ERROR] {node_label}: {self._stop_message(stop_reason)}")
@@ -422,12 +484,7 @@ class MeshRunner(QThread):
             f"SizeMax={size_max:.4f}, CharLengthFactor={self._elem_factor}")
         self.progress_updated.emit(18, "BooleanFragments + assembly meshing...")
 
-        ok, gmsh_stdout, stop_reason = self._run_gmsh(geo_file)
-        if gmsh_stdout:
-            for line in gmsh_stdout.split("\n"):
-                line = line.strip()
-                if line:
-                    self.log_emitted.emit(f"  [GMSH] {line}")
+        ok, _stdout, stop_reason = self._run_gmsh(geo_file)
         if stop_reason:
             return False, {}, self._stop_message(stop_reason)
         if not ok or not os.path.exists(asm_vtk) or os.path.getsize(asm_vtk) == 0:
@@ -587,9 +644,10 @@ class MeshRunner(QThread):
     def _run_gmsh(self, geo_file: str):
         """Run gmsh.exe, return (ok, stdout_text, stop_reason).
 
-        Polls in 200 ms slices instead of a single waitForFinished(180s):
+        Polls in 200 ms slices instead of a single waitForFinished(timeout):
         otherwise the Cancel button would be unresponsive during a long
-        assembly job.
+        assembly job, and the output could only be read once the process had
+        exited -- which left the log empty exactly while the user was waiting.
         """
         proc = QProcess()
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -600,19 +658,62 @@ class MeshRunner(QThread):
         if not proc.waitForStarted(10 * 1000):
             return False, "", "start_failed"
 
-        deadline = time.time() + self._timeout_s
+        started = time.time()
+        deadline = started + self._timeout_s
+        lines: List[str] = []
+        last_cpu = process_cpu_seconds(proc.processId())
+        last_activity = started
+        last_beat = (-1, -1)
+
         while not proc.waitForFinished(200):
+            if self._drain_gmsh_output(proc, lines):
+                last_activity = time.time()
+
+            # CPU time is the only signal separating "quiet because it is
+            # solving" from "wedged": the first keeps growing, the second does
+            # not. None means unreadable, which is evidence of nothing.
+            cpu = process_cpu_seconds(proc.processId())
+            if cpu is not None:
+                if last_cpu is not None and cpu > last_cpu + 0.01:
+                    last_activity = time.time()
+                last_cpu = cpu
+
+            # At most one heartbeat per second: the two integers only change
+            # then, and the dialog has nothing finer to show.
+            beat = (int(time.time() - started), int(time.time() - last_activity))
+            if beat != last_beat:
+                last_beat = beat
+                self.heartbeat.emit(float(beat[0]), float(beat[1]))
+
             if self._cancelled:
                 proc.kill()
                 proc.waitForFinished(3000)
-                return False, "", "cancelled"
+                return False, "\n".join(lines), "cancelled"
             if time.time() > deadline:
                 proc.kill()
                 proc.waitForFinished(3000)
-                return False, "", "timeout"
+                return False, "\n".join(lines), "timeout"
 
-        stdout = proc.readAllStandardOutput().data().decode("utf-8", errors="replace")
-        return proc.exitCode() == 0, stdout, ""
+        self._drain_gmsh_output(proc, lines)
+        return proc.exitCode() == 0, "\n".join(lines), ""
+
+    def _drain_gmsh_output(self, proc: QProcess, lines: List[str]) -> bool:
+        """Forward whatever gmsh printed since the last poll.
+
+        Returns True when there was something, which is the caller's heartbeat:
+        keeping the log moving while the job runs is what makes a long job look
+        like a long job rather than a frozen window.
+        """
+        chunk = bytes(proc.readAllStandardOutput().data()).decode(
+            "utf-8", errors="replace")
+        found = False
+        for line in chunk.splitlines():
+            line = line.strip()
+            if line:
+                lines.append(line)
+                self.log_emitted.emit(f"  [GMSH] {line}")
+                found = True
+        return found
 
     # ---------------------------------------------------------------
 

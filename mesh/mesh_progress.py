@@ -124,6 +124,13 @@ class MeshProgressDialog(QDialog):
         self._view_mesh_btn: Optional[QPushButton] = None
         self._stage_labels = []
 
+        # Live heartbeat of the running gmsh job: (elapsed, idle) in seconds.
+        # None while nothing runs, in which case the status line shows its base
+        # text alone.
+        self._status_text = "Initializing..."
+        self._elapsed: Optional[float] = None
+        self._idle: Optional[float] = None
+
         # History: the panel is a session, not a single run.
         self._run_no = 0
         self._run_failed = False
@@ -151,8 +158,9 @@ class MeshProgressDialog(QDialog):
         self._progress_bar.setTextVisible(True)
         layout.addWidget(self._progress_bar)
 
-        # Status label
-        self._status_label = QLabel("Initializing...")
+        # Status label. The message set here is only the base text: the
+        # heartbeat is appended to it by _refresh_status().
+        self._status_label = QLabel(self._status_text)
         self._status_label.setWordWrap(True)
         layout.addWidget(self._status_label)
 
@@ -221,7 +229,10 @@ class MeshProgressDialog(QDialog):
         self._run_failed = False
         self._last_params = params
         self._progress_bar.setValue(0)
-        self._status_label.setText("Initializing...")
+        self._status_text = "Initializing..."
+        self._elapsed = None
+        self._idle = None
+        self._refresh_status()
         self._finished = False
         self._cancel_btn.setEnabled(True)
         self.hide_rollback()
@@ -324,7 +335,8 @@ class MeshProgressDialog(QDialog):
         if len(labels) <= 1:
             self._stage_row.setVisible(False)
             if labels:
-                self._status_label.setText(labels[0])
+                self._status_text = labels[0]
+                self._refresh_status()
             return
 
         for i, name in enumerate(labels):
@@ -355,7 +367,8 @@ class MeshProgressDialog(QDialog):
                 lb.setText(f"○ {name}")
                 lb.setStyleSheet("")
         if message:
-            self._status_label.setText(message)
+            self._status_text = message
+            self._refresh_status()
 
     # ---- Outcome ----
 
@@ -367,6 +380,12 @@ class MeshProgressDialog(QDialog):
         self._run_failed = not success
         self._progress_bar.setValue(100)
         self._cancel_btn.setEnabled(False)
+        # Nothing is running any more, and the closing line below carries the
+        # duration -- a heartbeat left on the status line would describe a job
+        # that has already ended.
+        self._elapsed = None
+        self._idle = None
+        self._refresh_status()
 
         # The comparison the user came for: one line per run, in order, and the
         # log is never cleared so the previous ones are still above it.
@@ -391,7 +410,34 @@ class MeshProgressDialog(QDialog):
         """
         self._progress_bar.setValue(value)
         if status:
-            self._status_label.setText(status)
+            self._status_text = status
+        self._refresh_status()
+
+    def set_heartbeat(self, elapsed: float, idle: float) -> None:
+        """`BooleanFragments + assembly meshing... · 2 min 14 s · gmsh active`.
+
+        The bar and the log both freeze while a single gmsh job runs, so without
+        these two numbers a job that is merely slow cannot be told from one that
+        is wedged. `idle` counts output *and* CPU time, so "gmsh active" holds
+        even while it says nothing.
+        """
+        self._elapsed = elapsed
+        self._idle = idle
+        self._refresh_status()
+
+    def _refresh_status(self) -> None:
+        """Re-render the status line: base text plus the live heartbeat.
+
+        The heartbeat is appended rather than replacing the text, so the stage
+        or progress message set elsewhere survives it.
+        """
+        text = self._status_text or "Initializing..."
+        if self._elapsed is not None:
+            text += f" · {_fmt_elapsed(self._elapsed)}"
+            if self._idle is not None:
+                text += (" · gmsh active" if self._idle < 2
+                         else f" · silent for {int(self._idle)} s")
+        self._status_label.setText(text)
 
     def append_log(self, text: str):
         """Append a log line. It used to overwrite the status line, leaving the
@@ -436,7 +482,10 @@ class MeshProgressDialog(QDialog):
         against. Only a new CAD import (a different model) passes True.
         """
         self._progress_bar.setValue(0)
-        self._status_label.setText("Initializing...")
+        self._status_text = "Initializing..."
+        self._elapsed = None
+        self._idle = None
+        self._refresh_status()
         self._finished = False
         if clear_log:
             self._log_view.clear()

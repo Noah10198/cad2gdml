@@ -1267,6 +1267,7 @@ class MainWindow(QMainWindow):
         self._mesh_current_params = dict(params)
 
         self._mesh_runner.progress_updated.connect(self._on_mesh_progress)
+        self._mesh_runner.heartbeat.connect(self._on_mesh_heartbeat)
         self._mesh_runner.log_emitted.connect(self._on_mesh_log)
         self._mesh_runner.finished_with_result.connect(self._on_mesh_finished)
         self._mesh_runner.stages_defined.connect(self._on_mesh_stages)
@@ -1418,6 +1419,15 @@ class MainWindow(QMainWindow):
         self._logger.log_system(line)
         if self._mesh_progress_dlg:
             self._mesh_progress_dlg.append_log(line.split("\n")[-1])
+
+    def _on_mesh_heartbeat(self, elapsed: float, idle: float):
+        """Pass the runner's liveness on to the dialog.
+
+        A single gmsh job freezes both the bar and the log, which is what a
+        wedged process looks like too; elapsed and idle tell the two apart.
+        """
+        if self._mesh_progress_dlg:
+            self._mesh_progress_dlg.set_heartbeat(elapsed, idle)
 
     def _on_mesh_finished(self, success: bool, mesh_paths: dict, message: str):
         """One job is done: fold it in, then start the next one.
