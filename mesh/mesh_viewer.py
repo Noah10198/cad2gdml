@@ -62,13 +62,22 @@ def _param_key(params: dict) -> tuple:
 def _row_cells(row: dict) -> List[str]:
     """One report row as the table and the CSV both show it.
 
-    Mode is resolved, not copied: "auto" is the absence of a choice, and a part
-    in a unit of one is meshed per-solid whatever the record says.
+    Unit and Mode are both read off the job that wrote the file, not off the
+    grouping of the model as it is now (scope.part_param_rows fills them in):
+    the two have to agree, and an assembly run's fragments sitting on the parts
+    of a group that has since been split would otherwise be reported as
+    per-solid ones -- the table contradicting the file beside it. "alone" is
+    what a one-member job is called, and "auto" the absence of a choice, so the
+    Mode falls back to the unit only when there is no job to read: with no
+    provenance to go on, the current grouping is all there is.
     """
     p = row.get("params") or {}
-    mode = p.get("mode")
-    if mode in (None, "auto"):
-        mode = "assembly" if int(row.get("unit_parts") or 1) > 1 else "per_solid"
+    executed = row.get("executed")
+    if executed not in ("assembly", "per_solid"):
+        executed = p.get("mode")
+        if executed in (None, "auto"):
+            executed = ("assembly" if int(row.get("unit_parts") or 1) > 1
+                        else "per_solid")
     return [
         str(row.get("part", "")),
         str(row.get("unit", "")),
@@ -79,7 +88,7 @@ def _row_cells(row: dict) -> List[str]:
         _fmt(p.get("mesh_max_factor", "?")),
         str(p.get("smoothing", "?")),
         str(p.get("element_order", "?")),
-        _MODE_TEXT.get(mode, str(mode)),
+        _MODE_TEXT.get(executed, str(executed)),
         str(row.get("file", "")),
     ]
 

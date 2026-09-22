@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         # possible at all.
         self._mesh_prev_nodes: dict = {}
         self._mesh_prev_params: dict = {}
+        self._mesh_prev_source: dict = {}
         self._mesh_prev_outcome: Optional[MeshOutcome] = None
         self._mesh_prev_run: Optional[dict] = None
         self._mesh_prev_run_no: int = 0
@@ -140,6 +141,14 @@ class MainWindow(QMainWindow):
         # marks what changed against them, and skips a group that has nothing to
         # redo. This is what makes "the second run only meshes what changed" true.
         self._meshed_params: dict = {}
+        # Which job wrote each part's current file: entry_id -> the member set of
+        # the group that produced it. Both kinds of run write the same part's
+        # file, so _meshed_params alone cannot say whether a record still
+        # describes the facets in use -- an assembly run leaves every per-solid
+        # record of its members intact while replacing their meshes with one
+        # fragment each. This is the provenance that closes the gap, and it is
+        # what the panel and the preview read to tell the two apart.
+        self._mesh_source: dict = {}
 
         # Interference check state
         self._interference_dlg: Optional['InterferenceDialog'] = None
@@ -814,6 +823,7 @@ class MainWindow(QMainWindow):
         self._discard_mesh_scope_panel()
         self._meshed_nodes = {}
         self._meshed_params = {}
+        self._mesh_source = {}
         self._mesh_outcome = None
         self._last_mesh_run = None
         self._last_mesh_params = dict(DEFAULT_PARAMS)
@@ -862,6 +872,7 @@ class MainWindow(QMainWindow):
         # Clean up mesh data associated with deleted ids
         for eid in removed_ids:
             self._meshed_nodes.pop(eid, None)
+            self._mesh_source.pop(eid, None)
         # A group's values describe the parts that were meshed together, so a key
         # that just lost one of them describes nothing: it goes rather than wait
         # for a group that no longer exists in that shape.
@@ -1222,6 +1233,7 @@ class MainWindow(QMainWindow):
             dark=self._dark_theme,
             first_run=first_run,
             meshed_params=self._meshed_params,
+            source=self._mesh_source,
             parent=self,
         )
         # Double-clicking a group in the panel opens its parts in a window of
@@ -1376,6 +1388,7 @@ class MainWindow(QMainWindow):
         # back to #N" has something exact to put back rather than a guess.
         self._mesh_prev_nodes = dict(self._meshed_nodes)
         self._mesh_prev_params = dict(self._meshed_params)
+        self._mesh_prev_source = dict(self._mesh_source)
         self._mesh_prev_outcome = self._mesh_outcome
         self._mesh_prev_run = dict(self._last_mesh_run) if self._last_mesh_run \
             else None
@@ -1498,11 +1511,21 @@ class MainWindow(QMainWindow):
                                     "Generate a mesh before viewing.")
             return
 
+        scope = self._view_mesh_scope()
+        if not scope:
+            self._logger.log_system(
+                "Nothing to view: none of the ticked units has a mesh yet.")
+            QMessageBox.information(
+                self, "Nothing to View",
+                "None of the ticked units has a mesh yet. Tick a meshed unit, "
+                "or run the mesh first.")
+            return
+
         viewer = MeshViewer()
-        viewer.load_mesh(self._meshed_nodes,
+        viewer.load_mesh(scope,
                          mesh_params=self._view_mesh_params(),
                          title=self._mesh_viewer_title(),
-                         part_rows=self._mesh_part_rows())
+                         part_rows=self._mesh_part_rows(scope))
         viewer.show()
         # Keep a reference so Python GC won't destroy the C++ QVTKRenderWindowInteractor
         # while Qt is still delivering mouse events to it.
@@ -1510,8 +1533,25 @@ class MainWindow(QMainWindow):
         viewer.finished.connect(
             lambda result, v=viewer: self._mesh_viewers.remove(v))
         self._logger.log_system(
-            f"Mesh preview opened: {len(self._meshed_nodes)} meshed part(s)."
+            f"Mesh preview opened: {len(scope)} meshed part(s)."
         )
+
+    def _view_mesh_scope(self) -> dict:
+        """The meshed parts to show: the panel's ticked units, when it is open.
+
+        The ticks are what the panel works on -- what Mesh would run, what the
+        parameter block edits, what the rows describe -- so they are what the
+        preview draws as well: ticking three solids to look at those three is
+        one gesture rather than a selection plus a separate filter. With no
+        panel open there is no selection on screen, and the preview is what it
+        always was: everything that has a mesh.
+        """
+        panel = self._mesh_panel()
+        if panel is None:
+            return dict(self._meshed_nodes)
+        wanted = set(panel.selected_entry_ids())
+        return {eid: p for eid, p in self._meshed_nodes.items()
+                if eid in wanted}
 
     def _view_mesh_params(self) -> dict:
         """The parameter overlay for the preview: the values last used.
@@ -1521,16 +1561,18 @@ class MainWindow(QMainWindow):
         """
         return dict(self._last_mesh_params)
 
-    def _mesh_part_rows(self) -> list:
-        """One row per meshed part: its unit and the values its mesh was made
-        with. This is what the preview's table and CSV export are made of."""
+    def _mesh_part_rows(self, meshed_nodes: Optional[dict] = None) -> list:
+        """One row per meshed part on screen: its unit and the values its mesh
+        was made with. This is what the preview's table and CSV export are made
+        of, so it lists the parts being shown and no others."""
         nodes = self._geo_agent.get_all_solid_nodes()
         return part_param_rows(
-            self._meshed_nodes,
+            self._meshed_nodes if meshed_nodes is None else meshed_nodes,
             self._meshed_params,
             self._current_mesh_groups(nodes),
             {n.entry_id: (n.name or n.entry_id) for n in nodes},
-            self._last_mesh_params)
+            self._last_mesh_params,
+            source=self._mesh_source)
 
     def _mesh_viewer_title(self) -> str:
         """`Mesh Preview #2 · Frontal-Delaunay · elem 0.50 · Conformal`.
@@ -1664,8 +1706,15 @@ class MainWindow(QMainWindow):
                 # Recorded per group, not per run: these are the values that made
                 # this group's mesh, which is what the panel compares against next
                 # time to decide whether the group has to run again at all.
-                self._meshed_params[group_key(group.entry_ids)] = \
-                    dict(self._mesh_current_params)
+                key = group_key(group.entry_ids)
+                self._meshed_params[key] = dict(self._mesh_current_params)
+                # The same for the provenance: these parts now hold *this* job's
+                # mesh, whatever they held before it -- an assembly run overwrites
+                # the per-solid files of its members, so their earlier records
+                # have to stop pointing anywhere.
+                for eid in mesh_paths:
+                    if eid in group.entry_ids:
+                        self._mesh_source[eid] = key
             self._logger.log_system(
                 f"{who}: meshed ({job_elapsed:.1f}s): {message}")
         else:
@@ -1680,6 +1729,14 @@ class MainWindow(QMainWindow):
                             for eid in group.entry_ids
                             if eid in self._mesh_prev_nodes}
                 self._mesh_kept.update(restored)
+                # The files in use are the ones they had, so the provenance goes
+                # back with them: a failed job leaves the model exactly as it
+                # found it, records and all.
+                for eid in group.entry_ids:
+                    if eid in restored and eid in self._mesh_prev_source:
+                        self._mesh_source[eid] = self._mesh_prev_source[eid]
+                    else:
+                        self._mesh_source.pop(eid, None)
                 key = group_key(group.entry_ids)
                 if restored and key in self._mesh_prev_params:
                     # Put the values back too: the mesh in use is still the old
@@ -1817,7 +1874,7 @@ class MainWindow(QMainWindow):
                 f"{outcome.n_meshed} solid(s) · {elapsed:.1f}s"
                 + (" · cancelled" if self._mesh_cancelled else ""),
                 not self._mesh_cancelled)
-            panel.adopt_run(self._meshed_params)
+            panel.adopt_run(self._meshed_params, self._mesh_source)
             self._offer_rollback(success)
 
         # Run directories that nothing points at any more go now that the
@@ -1885,6 +1942,9 @@ class MainWindow(QMainWindow):
 
         self._meshed_nodes = live
         self._meshed_params = dict(self._mesh_prev_params)
+        # The provenance of that run, not this one's: which job wrote each file
+        # is part of what "put the previous run back" means.
+        self._mesh_source = dict(self._mesh_prev_source)
         self._mesh_outcome = self._mesh_prev_outcome
         self._last_mesh_run = dict(self._mesh_prev_run) if self._mesh_prev_run \
             else None
@@ -1919,7 +1979,7 @@ class MainWindow(QMainWindow):
             # is the mesh its View Mesh button should open.
             panel.hide_rollback()
             panel.set_view_mesh_available(True)
-            panel.adopt_run(self._meshed_params)
+            panel.adopt_run(self._meshed_params, self._mesh_source)
         self._toolbar.set_mesh_state("remesh" if live else "mesh")
 
     # ---- Mesh work area (versioned per run) ----

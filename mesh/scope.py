@@ -183,7 +183,8 @@ def part_param_rows(meshed_nodes: Dict[str, str],
                     meshed_params: Dict[Tuple[str, ...], dict],
                     groups: Sequence[MeshGroup],
                     names: Dict[str, str],
-                    fallback: dict) -> List[dict]:
+                    fallback: dict,
+                    source: Optional[Dict[str, Tuple[str, ...]]] = None) -> List[dict]:
     """One row per meshed part: the unit it belongs to and the values behind it.
 
     The preview used to print one parameter set over every mesh it showed, which
@@ -193,6 +194,23 @@ def part_param_rows(meshed_nodes: Dict[str, str],
     when it has a record of its own, otherwise the record of the unit it is in,
     otherwise the values of the last run.
 
+    `source` -- entry id -> the member set of the job that produced that part's
+    current file -- is what keeps the reading exact, and it comes first when it
+    is there: the file a part holds is the file of the *last* job that wrote it,
+    and both a per-solid run and an assembly run write the same part's file. A
+    per-solid record left over from before an assembly run describes a mesh that
+    is no longer in use, so reading it here would report the part as meshed with
+    numbers the file in the row was not made with, in the mode that run had
+    rather than the mode in use. `unit`, `unit_parts` and `executed` all three
+    describe that job -- which unit the file came from, how big it was, and which
+    kind of run it was -- and they are the reason a row cannot contradict itself:
+    the grouping passed in `groups` is *today's*, re-analysis may have split or
+    joined the group since, and reading a label off it would print "Group A, 6
+    parts" beside a file whose own mode column says Per-solid, a unit of six that
+    no per-solid run can produce. Without `source` the row falls back to the
+    record it can find and to the current grouping, which is the best a caller
+    with no provenance has.
+
     Iterating `names` is what puts the rows in tree order, and what drops a part
     whose mesh is no longer in the tree.
     """
@@ -200,6 +218,7 @@ def part_param_rows(meshed_nodes: Dict[str, str],
     for g in groups:
         for eid in g.entry_ids:
             unit_of[eid] = g
+    by_key = {group_key(g.entry_ids): g for g in groups}
 
     rows: List[dict] = []
     for eid, name in names.items():
@@ -207,17 +226,50 @@ def part_param_rows(meshed_nodes: Dict[str, str],
         if not path:
             continue
         g = unit_of.get(eid)
-        own = meshed_params.get(group_key([eid]))
-        if own is None and g is not None:
-            own = meshed_params.get(group_key(g.entry_ids))
+        own_key = (source or {}).get(eid)
+        if own_key not in meshed_params:
+            # No provenance, or a job whose record is gone: the part's own
+            # record, then its unit's. Same order the panel seeds from.
+            fallbacks = [(eid,)]
+            if g is not None:
+                fallbacks.append(group_key(g.entry_ids))
+            own_key = next((k for k in fallbacks if k in meshed_params), None)
+        if own_key is None:
+            # Nothing to read off: the current grouping is the only unit left to
+            # name, and the Mode column is left to resolve itself.
+            unit, unit_parts, executed = \
+                (g.label if g else "—"), (g.n_parts if g else 1), None
+        else:
+            # Which kind of job it was: a member set of one is a per-solid run, a
+            # bigger one an assembly run.
+            unit, unit_parts = _job_unit(own_key, by_key)
+            executed = "assembly" if len(own_key) > 1 else "per_solid"
         rows.append({
             "part": name,
-            "unit": g.label if g else "—",
-            "unit_parts": g.n_parts if g else 1,
+            "unit": unit,
+            "unit_parts": unit_parts,
+            "executed": executed,
             "file": path,
-            "params": dict(own or fallback),
+            "params": dict(meshed_params[own_key]) if own_key
+                      else dict(fallback),
         })
     return rows
+
+
+def _job_unit(key: Tuple[str, ...],
+              by_key: Dict[Tuple[str, ...], MeshGroup]) -> Tuple[str, int]:
+    """A job as the unit it was, named the way the panel names it, and its size.
+
+    One member is the part itself: that run was per-solid, so there is no group
+    to point at and the row says "alone" -- the part's own name would only repeat
+    the Part column, and the Mode column already says the run was per-solid. A
+    bigger set is named after the group it is, or by its size when that group no
+    longer exists in that shape, which is all that is left of it.
+    """
+    if len(key) == 1:
+        return "alone", 1
+    g = by_key.get(key)
+    return (g.label if g else f"{len(key)} parts"), len(key)
 
 
 def scope_text(selected: Sequence[MeshGroup], kept: Sequence[MeshGroup]) -> str:

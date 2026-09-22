@@ -26,32 +26,40 @@ visible fact instead of a surprise.
 
 Where the parameters live: with the unit, not with the panel. One block edits
 them -- a form per row, or per solid, would be six copies of the same eight
-fields -- and what it writes belongs to the *current* row: the one that was
-clicked. The click and the tick are two different questions and they are answered
-separately:
+fields -- and what it writes belongs to every *selected* row. There is one
+gesture, and the selection it builds is the scope of everything the panel does:
 
-  - the tick is the scope of the run: "mesh this unit";
-  - the click is the scope of the editor: "these numbers are this unit's".
+  - clicking a row selects that row alone, which is how one unit gets its own
+    numbers: "these numbers are this unit's";
+  - ctrl-click toggles one more row into the selection, shift-click takes the
+    range back to the last click, ctrl-A takes everything -- and an edit then
+    lands on all of them, field by field, so it is the fast way to give a whole
+    model one set of numbers without copying the fields nobody touched;
+  - the selection is also what `Mesh` runs and what `View Mesh` draws: what is
+    ticked is what the run works on and what the 3D view shows.
 
-So a solid can be given its own values without unticking the rest, which is what
-makes a per-solid model worth looking at: the whole point of splitting a group is
-that one part needs a finer mesh. The old behaviour -- one edit, every ticked unit
--- is still one click away, on `Apply to all ticked`, because it is genuinely the
-fast way to give a whole model one set of numbers. It just says so now.
+An unticked unit keeps the mesh it has; so does a selected one whose values did
+not change -- but only while the mesh it holds was made by the job it is in now.
+A unit that was meshed per-solid and has since been grouped, or the other way
+round, is meshed again: the facets that exist are not the facets its mode asks
+for, and reporting them as its own would mix the two kinds of mesh in one model
+(_source_of, and the provenance the host keeps in _mesh_source).
 
 The block marks the fields that differ from the mesh its unit already has, which
 is exactly the set a run will re-mesh.
 
 The one value that is not per unit is the mode: auto / assembly / per-solid
 decides what a unit *is* (a whole group, or one solid of it), so it is adopted by
-the whole panel and rebuilds the rows when it changes.
+the whole panel and rebuilds the rows when it changes -- which also drops the
+reuse for every unit the new mode describes differently.
 
 Double-clicking a row highlights that group's solids in the 3D view, so the row
 can stay one line however big the model gets.
 
 Why the progress bar is here too: this is the window a run is started from and
 the window the user is looking at while it runs, so it is where the run reports
--- one bar under the parameters, and one line under the bar. The same goes for
+-- one bar under the parameters, and two rows under the bar that hold their
+height whatever the bar is reading. The same goes for
 the other wait this panel starts: Re-check contacts reports on that bar too, one
 wait at a time, so the window a button is in is the window its wait is in
 (_bar_owner). The separate progress dialog it replaces carried a second log (the
@@ -68,6 +76,7 @@ edit away.
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -110,6 +119,13 @@ _LIST_MIN_HEIGHT = 260
 # the user's to drag, which is why this bounds the window and not the list.
 _OPEN_HEIGHT_CAP = 660
 
+# A row that is standing by rather than absent. The status block under the bar is
+# two rows at every moment (_build_progress), and a row with nothing to say keeps
+# its line by holding a no-break space: emptied, not hidden, the same way the
+# notice band is kept (_refresh_contact_notice), so a wait that has no checklist
+# does not take a line off the panel and pull everything above it down.
+_BLANK_ROW = "\u00a0"
+
 
 def resolved_mode(group: MeshGroup, params: Optional[dict]) -> str:
     """The mode this group will really be meshed in.
@@ -130,9 +146,11 @@ class _GroupRow(QFrame):
     because that is what buys the chip and the second state; a delegate would buy
     the same thing with more code.
 
-    Clicking emits `clicked`: the row is not just a tick any more, it is also how
-    the parameter block below is aimed at one unit instead of at everything
-    ticked. Double-click emits `activated` so the host can open the group on its
+    Clicking emits `clicked(index, how)`, where `how` is the selection gesture:
+    "one" for a plain click, "toggle" for ctrl-click, "range" for shift-click.
+    The row is not just a tick -- it is how the parameter block below is aimed at
+    one unit instead of at everything ticked, and how several units are aimed at
+    together. Double-click emits `activated` so the host can open the group on its
     own. The panel lists groups, not parts, and "Group A · 3 part(s)" is not an
     answer to "which three?" -- so the answer has to live somewhere, and the row
     stays one line.
@@ -144,7 +162,7 @@ class _GroupRow(QFrame):
 
     toggled = pyqtSignal(int, bool)
     activated = pyqtSignal(int)
-    clicked = pyqtSignal(int)
+    clicked = pyqtSignal(int, str)
 
     def __init__(self, index: int, group: MeshGroup, pal: Dict[str, str],
                  title: str = "", count: str = "",
@@ -174,11 +192,25 @@ class _GroupRow(QFrame):
         # has to be meshed before a GDML export, not before this.
         self._check.setChecked(True)
         self._check.setToolTip(
-            "Ticked groups are meshed; an unticked one keeps the mesh it has.")
+            "Ticked units are the ones this panel works on: they are what Mesh "
+            "re-meshes and what View Mesh draws. An unticked one keeps the mesh "
+            "it has.\n\n"
+            "Click a row to work on that one alone, Ctrl-click to add or remove "
+            "one, Shift-click to take a range, Ctrl-A for all of them: the "
+            "parameters below are edited for everything ticked.")
         lay.addWidget(self._check, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._title = QLabel(title or f"Group {group.letter}")
-        self._count = QLabel(count or f"{group.n_parts} part(s)")
+        # A titled row (per-solid mode) can have no count at all: a solid that
+        # is its own component belongs to no larger group, and "1 part(s)"
+        # would only restate the title. It stays out of the layout instead.
+        self._count = QLabel(count or ("" if title else f"{group.n_parts} part(s)"))
+        # Only ever hide, never setVisible(True) here: _count has no parent yet,
+        # and Qt turns a shown parentless widget into its own top-level window,
+        # which flashed a popup for every row _rebuild_rows re-made. A widget is
+        # hidden by default, and addWidget (below) shows it once it has text.
+        if not self._count.text():
+            self._count.hide()
         self._chip = QLabel(group.mode_label)
         inner = QHBoxLayout()
         inner.setContentsMargins(0, 0, 0, 0)
@@ -201,11 +233,13 @@ class _GroupRow(QFrame):
         self._paint()
 
     def set_active(self, on: bool):
-        """Is this the row the parameter block is editing right now?
+        """Is this the row the parameter block is showing right now?
 
-        The tick and the active row are two different questions -- "mesh this" and
-        "edit this" -- so they get two different marks: the checkbox for the first,
-        this accent edge for the second.
+        The tick and the shown row are two different questions -- "which units
+        this panel works on" and "whose numbers are on screen" -- so they get two
+        different marks: the checkbox for the first, this accent edge for the
+        second. Both are in the selection; a multi-row selection shows the row
+        that was clicked last and edits all of them.
         """
         if bool(on) == self._active:
             return
@@ -229,13 +263,21 @@ class _GroupRow(QFrame):
         self._chip.setStyleSheet(self._chip_qss(self.checked()))
 
     def mousePressEvent(self, event):
-        """A single click makes this the row the parameters are edited for.
+        """A click selects, with the modifiers every list has.
 
-        Not a selection model and not a QListWidget: the point of the click is
-        only that the one parameter block below stops writing to everything
-        ticked and starts writing to one unit.
+        Plain click: this row alone -- the one parameter block below then writes
+        to one unit. Ctrl-click: add or remove this row. Shift-click: everything
+        back to the last click. Not a QListWidget: the row carries a chip and two
+        label styles, which a delegate would cost more code to reproduce.
         """
-        self.clicked.emit(self._index)
+        mods = event.modifiers()
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            how = "toggle"
+        elif mods & Qt.KeyboardModifier.ShiftModifier:
+            how = "range"
+        else:
+            how = "one"
+        self.clicked.emit(self._index, how)
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
@@ -328,6 +370,7 @@ class MeshScopeDialog(QDialog):
                  first_run: bool = False,
                  preselect: Optional[Sequence[int]] = None,
                  meshed_params: Optional[Dict[Tuple[str, ...], dict]] = None,
+                 source: Optional[Dict[str, Tuple[str, ...]]] = None,
                  parent: Optional[QWidget] = None):
         super().__init__(parent)
         # The components are the units the model *has* -- one per contact-graph
@@ -346,6 +389,12 @@ class MeshScopeDialog(QDialog):
         # (see scope.group_key). The opening values, the baseline of the
         # changed-field markers and the reuse test all read this one dict.
         self._meshed_params: Dict[Tuple[str, ...], dict] = dict(meshed_params or {})
+        # Which job produced each part's current file: entry id -> the member set
+        # of the job that wrote it. Records say what a unit was meshed with, but
+        # not whether the file part holds is still that job's -- a per-solid run
+        # and an assembly run write the same part's file, so a record can outlive
+        # the mesh it describes. _source_of() is the other half of the reuse test.
+        self._mesh_source: Dict[str, Tuple[str, ...]] = dict(source or {})
         self._defaults: Dict[str, Any] = merge_defaults(initial_params)
 
         # The run the panel is watching. The panel is the progress window now --
@@ -394,6 +443,9 @@ class MeshScopeDialog(QDialog):
         # decides what a unit *is* (a whole group or one solid of it), so it is a
         # property of the panel while the six numbers are properties of the row.
         self._current: Optional[int] = None
+        # Where a shift-click measures its range from: the row of the last click.
+        # The ticks are the selection; this is only the far end of the gesture.
+        self._anchor: Optional[int] = None
         self._mode_choice: str = self._defaults["mode"]
         # Values belong to the unit, not to the panel: one editor writes them, but
         # it writes them to the row that is current -- so a solid can be given its
@@ -414,6 +466,12 @@ class MeshScopeDialog(QDialog):
         self.setFixedWidth(_CARD_WIDTH)
         self.setModal(False)
         self._build_ui()
+        # Ctrl-A takes everything. A window shortcut rather than keyPressEvent:
+        # the panel is full of spin boxes and combos, and a focused line edit eats
+        # the keystroke as "select this text" before the dialog ever sees it.
+        self._select_all_shortcut = QShortcut(
+            QKeySequence(QKeySequence.StandardKey.SelectAll), self)
+        self._select_all_shortcut.activated.connect(self.select_all)
         # The panel can open with the mode already forced -- it re-opens at the
         # last run's values -- and the rows have to be the ones that mode means
         # before anything is ticked.
@@ -627,6 +685,12 @@ class MeshScopeDialog(QDialog):
         is something to act on. The failure line keeps the warning colour --
         that one is the panel reporting that a background job did not finish,
         and colour is what makes it read as one.
+
+        It is never blank, though: with nothing to report it states what the
+        rows are (_grouping_state), in the dim grey the rest of the state about
+        the panel is written in. An empty band above a list reads as something
+        that failed to load -- and the state of the rows is the one thing the
+        row chips cannot say, since they only ever speak for their own unit.
         """
         p = self._pal
         state = self._contact_state
@@ -654,17 +718,36 @@ class MeshScopeDialog(QDialog):
                     "the units meshed here.")
             colour = p["title"]
         else:
-            # Emptied, not hidden: the band keeps the height it was given at
-            # construction (_build_contact_notice), so the notice arriving and
-            # leaving moves nothing on screen.
-            self._notice_text.setText("")
-            self._regroup_btn.setVisible(False)
-            return
+            # No wait and nothing wrong: the band states the grouping instead of
+            # emptying itself. Same band, same one line (_grouping_state), so a
+            # notice arriving over it still moves nothing on screen.
+            text = self._grouping_state()
+            colour = p["foot_text"]
         self._notice_text.setText(text)
         self._notice_text.setStyleSheet(
             f"color: {colour}; font-size: 11.5px;")
         self._regroup_btn.setVisible(bool(self._late_components)
                                      and not self._running)
+
+    def _grouping_state(self) -> str:
+        """What the rows are, in one line: the band's state when it has no news.
+
+        The chips say this per unit; this says it for the model -- how many
+        units the analysis found over how many solids, and, in per-solid mode,
+        that it is the mode rather than the analysis that is deciding. Rows that
+        are one unit per solid either way (no contacts anywhere) say so instead
+        of a count of one over one.
+        """
+        solids = sum(len(c.entry_ids) for c in self._components)
+        units = len(self._components)
+        if self._per_solid:
+            text = f"Per-solid: {solids} solid(s), one unit each"
+            return (f"{text}; the contact grouping ({units} unit(s)) is not "
+                    "used." if units < solids else f"{text}.")
+        if units == solids:
+            return (f"No contacts between the {solids} solid(s): each one is "
+                    "its own unit.")
+        return f"Contact grouping: {units} unit(s) over {solids} solid(s)."
 
     def _settle_geometry(self):
         """Give the window its final height before it is ever shown.
@@ -769,17 +852,21 @@ class MeshScopeDialog(QDialog):
         return line
 
     def _build_contact_notice(self) -> QWidget:
-        """The line between the ticks and the rows, empty until it has news.
+        """The line between the ticks and the rows: the state of the grouping.
 
         It belongs here, directly above the list it is about: what the rows say
         (`Per-solid` / `Assembly conformal`) is only an answer once the contact
         analysis has landed, and that is exactly the kind of thing a chip cannot
-        say on its own. Empty in the normal case -- an empty band, not a
-        permanent paragraph about a background job -- and the band is reserved:
-        the notice lands on a window that is already on screen, and a row that
-        materialises then is a row the layout has to find room for, which drops
-        the list and the footer below it. Reserved at the button's height, so
-        the button's own appearance costs nothing either.
+        say on its own. It carries news when there is any -- a wait in flight, a
+        failure, an answer that disagrees with the rows -- and the state of the
+        grouping when there is none (_grouping_state), which is one line either
+        way. Never blank: an empty band between the ticks and the list reads as
+        something that failed to arrive.
+
+        One line, and the band is reserved at the button's height: a notice
+        lands on a window that is already on screen, and a row that grows then
+        is a row the layout has to find room for, which drops the list and the
+        footer below it.
         """
         self._notice = QFrame()
         n = QHBoxLayout(self._notice)
@@ -844,12 +931,15 @@ class MeshScopeDialog(QDialog):
     def _build_progress(self) -> QWidget:
         """The bar and the two rows that say what the bar is doing.
 
-        Two rows, and two of them at every moment of a run: the stages on the
-        first (what is behind, what is on, what is ahead) and the step it is on
-        with its heartbeat on the second. Folded into one row they were longer
-        than the panel is wide as soon as the step name was, so the row wrapped
-        and unwrapped while the run was being watched -- and the panel's height
-        moved with it.
+        Two rows, and two of them at *every* moment, run or not: the stages on
+        the first (what is behind, what is on, what is ahead) and the step it is
+        on with its heartbeat on the second. Folded into one row they were
+        longer than the panel is wide as soon as the step name was, so the row
+        wrapped and unwrapped while the run was being watched -- and the panel's
+        height moved with it. The same rule is why neither row is ever taken
+        away: a wait with no checklist (the contact analysis) and a panel before
+        its first run both read the same two lines as a run in progress, so
+        nothing above the footer moves as the bar changes hands and back.
         """
         box = QWidget()
         v = QVBoxLayout(box)
@@ -863,12 +953,11 @@ class MeshScopeDialog(QDialog):
         self._progress_bar.setFixedHeight(16)
         v.addWidget(self._progress_bar)
 
-        # The stage row is up only while there are stages: a run that is one job
-        # has no checklist, and an empty row says something failed to load.
-        self._stage_label = QLabel()
+        # Both rows are always in the layout; whose text goes in which is
+        # _refresh_status's business.
+        self._stage_label = QLabel(_BLANK_ROW)
         self._stage_label.setWordWrap(True)
-        self._stage_label.setVisible(False)
-        self._progress_label = QLabel()
+        self._progress_label = QLabel(_BLANK_ROW)
         self._progress_label.setWordWrap(True)
         for lb in (self._stage_label, self._progress_label):
             lb.setStyleSheet(
@@ -1005,20 +1094,17 @@ class MeshScopeDialog(QDialog):
     # ----------------------------------------------------------------
 
     def _build_params_head(self) -> QWidget:
-        """`Mesh parameters · <unit>` plus the copy-to-everything shortcut.
+        """`Mesh parameters · <unit>`, naming the scope the block writes to.
 
-        The rule is *not* a constant, unlike Advanced: with per-unit values the
-        one thing the reader cannot see anywhere else is which unit these numbers
-        belong to. It changes on a click, never on a tick, so it does not drift
-        under an edit. The shortcut next to it is the other half of the same
-        truth: writing one row is the default now, and writing all the ticked
-        ones is the button that says so.
+        The rule is *not* a constant, unlike Advanced, and it is the only place
+        that can say what an edit is about to touch: the block displays one unit
+        but writes to every ticked one, so it names the row on screen and, when
+        the selection is bigger, how many more it stands for. There is no
+        copy-to-all button any more -- selecting all and editing *is* that, and
+        it is the same gesture as selecting two.
         """
         row = section_rule("Mesh parameters")
         self._params_rule_label = row.findChildren(QLabel)[0]
-        self._apply_btn = self._ghost("Apply to all ticked")
-        self._apply_btn.clicked.connect(self._apply_to_ticked)
-        row.layout().addWidget(self._apply_btn)
         return row
 
     def _full_params_text(self, p: dict) -> str:
@@ -1044,10 +1130,16 @@ class MeshScopeDialog(QDialog):
         if g.index in set(self.selected_indices()) and self._reused(g):
             state = ("\n\nThese are the values of the mesh it has: this run "
                      "keeps it.")
+        elif self._meshed_record(g) is not None:
+            # A record that no longer matches the facets on the parts: the unit
+            # was meshed in the other mode since, so this run re-meshes it.
+            state = ("\n\nIt was meshed once, but not as this unit, and not "
+                     "with the mode it now asks for: this run re-meshes it.")
         else:
             state = ""
         return (f"{members}\n\n{self._full_params_text(self.params_for(g))}"
-                f"{state}\n\nClick to set these values.\n"
+                f"{state}\n\nClick to set these values for this unit alone; "
+                f"Ctrl-click and Shift-click to edit several at once.\n"
                 f"Double-click to highlight it in the 3D view.")
 
     # ----------------------------------------------------------------
@@ -1091,17 +1183,21 @@ class MeshScopeDialog(QDialog):
 
     def _make_row(self, index: int, unit: MeshGroup, holder: QWidget) -> _GroupRow:
         """One row, titled for the unit it stands for."""
+        title = count = ""
         if unit.name:
             title = unit.name
-            count = f"part of {self._component_of(unit).label}"
-        else:
-            title = ""
-            count = ""
+            comp = self._component_of(unit)
+            # Only a real group gets a "part of": with no contacts every solid
+            # is its own component, so "Solid1 part of Group A" would describe
+            # a solid as a part of itself, and five such rows would read as
+            # five groups where there are none.
+            if comp.n_parts > 1:
+                count = f"part of {comp.label}"
         row = _GroupRow(index, unit, self._pal, title=title, count=count,
                         parent=holder)
         row.toggled.connect(self._on_row_toggled)
         row.activated.connect(self._on_row_activated)
-        row.clicked.connect(self._set_current)
+        row.clicked.connect(self._on_row_clicked)
         return row
 
     def _rebuild_rows(self):
@@ -1141,6 +1237,9 @@ class MeshScopeDialog(QDialog):
         self._rebuild_rows()
         self._select_component_keys(selected)
         self._current = self._row_of_keys(unit_key, comp_key)
+        # The rows are new objects, so the shift-click anchor is a number into a
+        # list that no longer exists: it starts again from the edited row.
+        self._anchor = self._current
 
     def _row_of_keys(self, unit_key, comp_key) -> Optional[int]:
         """The row to keep editing after a rebuild: the same unit, else its group.
@@ -1184,13 +1283,33 @@ class MeshScopeDialog(QDialog):
 
     def set_selected(self, indices: Sequence[int]):
         """Check exactly `indices`, and keep the editor on a row that is left."""
-        wanted = {int(i) for i in indices}
+        self._set_checked_indices(int(i) for i in indices)
+        self._resolve_current()
+        self._load_params_for_current()
+        self._refresh_all()
+
+    def _set_checked_indices(self, indices):
+        """Tick exactly `indices` without being heard: the caller refreshes.
+
+        `row.set_checked` emits `toggled`, which is the host's business, so the
+        `_loading` flag that keeps a rebuild quiet keeps a selection quiet too.
+        """
+        wanted = set(indices)
         self._loading = True
         try:
             for i, row in enumerate(self._rows):
                 row.set_checked(i in wanted)
         finally:
             self._loading = False
+
+    def select_all(self):
+        """Ctrl-A: everything, which is how a whole model gets one set of values.
+
+        The panel is the only place the scope is chosen, and "all of them" is the
+        scope of a first run -- so it is one keystroke rather than one click per
+        row on a model with thirty solids.
+        """
+        self._set_checked_indices(range(len(self._groups)))
         self._resolve_current()
         self._load_params_for_current()
         self._refresh_all()
@@ -1209,10 +1328,28 @@ class MeshScopeDialog(QDialog):
         idx = self.current_index()
         return None if idx is None else self._groups[idx]
 
-    def _set_current(self, index: int):
-        """Edit *this* row: the click, not the tick, decides what is written."""
+    def _on_row_clicked(self, index: int, how: str = "one"):
+        """A click on a row: select by the modifier's gesture, and show that row.
+
+        A plain click leaves this row selected alone, which is how one unit gets
+        its own numbers -- "these numbers are this unit's". Ctrl-click adds or
+        removes one, shift-click takes everything back to the last click; either
+        way an edit then lands on all of them, which is the fast way to give a
+        handful of solids the same numbers without unticking the rest. The
+        clicked row is the one the block below displays, whatever the gesture.
+        """
         if not (0 <= index < len(self._groups)):
             return
+        if how == "toggle":
+            sel = set(self.selected_indices())
+            sel.symmetric_difference_update({index})
+            self._set_checked_indices(sel)
+        elif how == "range" and self._anchor is not None:
+            lo, hi = sorted((self._anchor, index))
+            self._set_checked_indices(range(lo, hi + 1))
+        else:
+            self._set_checked_indices([index])
+            self._anchor = index
         self._current = index
         self._load_params_for_current()
         self._refresh_all()
@@ -1232,6 +1369,18 @@ class MeshScopeDialog(QDialog):
 
     def selected_groups(self) -> List[MeshGroup]:
         return [self._groups[i] for i in self.selected_indices()]
+
+    def selected_entry_ids(self) -> List[str]:
+        """Every solid the ticked units cover, in tree order.
+
+        The host draws this set in the 3D view (View Mesh): the ticks say what
+        the panel is working on, and looking at what one is working on is the
+        same question, so it is the same answer.
+        """
+        ids: List[str] = []
+        for g in self.selected_groups():
+            ids.extend(g.entry_ids)
+        return ids
 
     def _kept_groups(self) -> List[MeshGroup]:
         sel = set(self.selected_indices())
@@ -1303,6 +1452,29 @@ class MeshScopeDialog(QDialog):
         """Ticked groups this run keeps instead of meshing -- see _reused()."""
         return [g for g in self.selected_groups() if self._reused(g)]
 
+    def _source_of(self, group: MeshGroup) -> bool:
+        """Was every part's current file written by *this* unit's job?
+
+        The other half of the reuse test, and the one that keeps the two kinds
+        of mesh apart. A record says a unit was meshed with certain values; it
+        does not say the file a part holds is still that job's, because both
+        kinds of run write the same part's file: an assembly run replaces every
+        member's mesh with its own fragment of the shared facets. Switching from
+        per-solid to assembly and back would otherwise find the per-solid records
+        intact, all six numbers equal, and reuse them for the per-solid mesh --
+        except the facets in place are the assembly's, cut into the parts. That
+        is one model holding the facets of two modes, and the very thing the
+        assembly mesh exists to remove.
+
+        With no provenance at all (a caller that passes no `source`) the test is
+        skipped: the same conservatism as an unrecorded mesh is not read as a
+        reuse, but a panel that cannot know must not refuse every reuse either.
+        """
+        if not self._mesh_source:
+            return True
+        key = group_key(group.entry_ids)
+        return all(self._mesh_source.get(eid) == key for eid in group.entry_ids)
+
     def _reused(self, group: MeshGroup) -> bool:
         """Does `group` already hold the mesh these values would produce?
 
@@ -1312,10 +1484,15 @@ class MeshScopeDialog(QDialog):
         already has only costs time. The parts' records do not count here, so a
         unit that has just been regrouped is never reused on the strength of the
         per-solid mesh it is meant to replace (_meshed_record). A group whose run
-        failed has no recorded mesh, so it is never reused by accident.
+        failed has no recorded mesh, so it is never reused by accident. Neither
+        does a record whose mesh is no longer on the parts it describes: that is
+        what _source_of() answers, and it is asked after the values, because a
+        value edit is a re-mesh whatever the provenance says.
         """
         record = self._meshed_record(group)
         if record is None:
+            return False
+        if not self._source_of(group):
             return False
         # The mode is the one value compared as it *resolves*, not as it is
         # written: "auto" and the mode this unit would take anyway are the same
@@ -1346,16 +1523,41 @@ class MeshScopeDialog(QDialog):
         if idx is None:
             return
         target = self._groups[idx]
-        made_with = self._meshed_record(target) or self._parts_record(target)
+        own = self._meshed_record(target)
+        made_with = own or self._parts_record(target)
+        # Whose mesh the marks are measured against, in the words the row uses:
+        # the unit's own when its own job made it, the parts' when they were
+        # meshed one by one and the unit is a regrouping of them. Both are "the
+        # numbers it opens on"; only the first is a mesh the unit still has, and
+        # the two must not read alike (_meshed_record).
+        note = ("its current mesh" if own else
+                "its parts' meshes" if made_with else "")
         self._params.set_params(self.params_for(target))
         self._params.set_baseline(_to_run_keys(made_with) if made_with else None,
-                                  note="its current mesh" if made_with else "")
+                                  note=note)
 
-    def _on_params_edited(self):
+    def _on_params_edited(self, key: str = ""):
+        """The one editor moved a field: give it to every selected unit.
+
+        Field by field on purpose. The block stands for the whole selection --
+        which is what ctrl- and shift-click built it for -- so an edit belongs to
+        all of it, but only in the field that moved. A selection is regularly a
+        set of units that differ in the others (one solid meshed finer, the rest
+        on the defaults), and copying the whole form onto each of them would
+        quietly overwrite the numbers nobody asked about. The current row takes
+        the whole form: the form *is* that row's values.
+        """
         values = self._params.params()
         idx = self.current_index()
         if idx is not None:
-            self._unit_params[group_key(self._groups[idx].entry_ids)] = dict(values)
+            for i in (self.selected_indices() or [idx]):
+                params = self._unit_params[group_key(self._groups[i].entry_ids)]
+                if i == idx:
+                    params.update(values)
+                elif key and key != "mode":
+                    # The mode is not one unit's business; the block below hands
+                    # it to the whole panel.
+                    params[key] = values[key]
         # The mode is one of these values, but it is not one unit's business: it
         # decides what a unit *is* (a whole group or one solid of it), so a new
         # one is adopted by the whole panel -- that is what makes the rows and the
@@ -1368,26 +1570,6 @@ class MeshScopeDialog(QDialog):
             self._sync_units()
         self._refresh_all()
 
-    def _apply_to_ticked(self):
-        """Copy the current row's values onto every ticked row.
-
-        This is what an edit used to do by itself, and it is still the fast way to
-        give a whole model one set of numbers -- but as a button that says it,
-        because the implicit version made "give this one solid its own values"
-        impossible without unticking everything else.
-        """
-        idx = self.current_index()
-        if idx is None:
-            return
-        values = self.params_for(self._groups[idx])
-        for i in self.selected_indices():
-            key = group_key(self._groups[i].entry_ids)
-            self._unit_params[key] = dict(values)
-        # The marks are measured against each unit's own mesh, so they have to be
-        # re-read: the unit being edited is one of the ones that just changed.
-        self._load_params_for_current()
-        self._refresh_all()
-
     # ----------------------------------------------------------------
     # Refresh
     # ----------------------------------------------------------------
@@ -1397,6 +1579,9 @@ class MeshScopeDialog(QDialog):
         self._refresh_active()
         self._refresh_params_rule()
         self._refresh_footer()
+        # The band's state line is about the grouping, and a mode edit is what
+        # changes the grouping the rows are built along (_grouping_state).
+        self._refresh_contact_notice()
 
     def _refresh_active(self):
         """Draw the accent edge on the row the parameters belong to."""
@@ -1405,19 +1590,22 @@ class MeshScopeDialog(QDialog):
             row.set_active(i == idx)
 
     def _refresh_params_rule(self):
-        """`Mesh parameters · <unit>`, and the copy-to-all shortcut with it.
+        """`Mesh parameters · <unit>`, plus how many more the edit reaches.
 
-        The unit name is the one thing the block must say: it used to write every
-        ticked row, so it did not have to name any row. It is re-read here rather
+        The unit name is the one thing the block must say -- with per-unit values
+        the reader cannot see anywhere else which unit these numbers belong to --
+        and the count beside it is the other thing they cannot see: the block
+        shows one row and writes to every ticked one. It is re-read here rather
         than at the edit, because a rebuild can move which row is current.
         """
         current = self.current_group()
+        if current is None:
+            self._params_rule_label.setText("Mesh parameters")
+            return
+        extra = len(self.selected_indices()) - 1
         self._params_rule_label.setText(
-            f"Mesh parameters · {current.label}" if current
-            else "Mesh parameters")
-        n = len(self.selected_indices())
-        self._apply_btn.setText(f"Apply to all ticked ({n})")
-        self._apply_btn.setEnabled(current is not None and n > 0)
+            f"Mesh parameters · {current.label}" if extra <= 0
+            else f"Mesh parameters · {current.label} +{extra} more")
 
     def _refresh_rows(self):
         """Re-chip and re-tooltip the rows: the parameters in them just changed.
@@ -1436,21 +1624,23 @@ class MeshScopeDialog(QDialog):
 
         The run button is a promise about the *next* run, and once every ticked
         unit is meshed with the values it holds there is no next run to make --
-        until a number is edited, at which point it comes back. A run that just
-        ended here takes its place: View Mesh. So the left end shows the one or
-        the other, never both, and never a disabled button that would mesh
-        nothing. Re-check contacts stands beside it in every state: it is about
-        the model, not about a run, and it is the one thing to reach for when the
-        grouping itself is in doubt.
+        until a number is edited, at which point it comes back. View Mesh stands
+        next to it whenever there is a mesh at all, because the ticks are also
+        how the 3D view is aimed: ticking three solids to look at the three of
+        them is the same selection a run would work on, and taking the button
+        away whenever some *other* ticked unit has work left would make the
+        subset unviewable exactly when it is being worked on. Re-check contacts
+        stands beside them in every state: it is about the model, not about a
+        run, and it is the one thing to reach for when the grouping itself is in
+        doubt.
 
         Grey is the answer to "can this be pressed": a session in flight leaves
-        all three on screen, and the colour is the only thing that says which of
-        them is waiting for it.
+        all of them on screen, and the colour is the only thing that says which
+        of them is waiting for it.
         """
         planned = self._planned_groups()
         n_parts = sum(g.n_parts for g in planned)
-        show_view = self._has_mesh and not planned
-        self._view_btn.setVisible(show_view)
+        self._view_btn.setVisible(self._has_mesh)
         self._rollback_btn.setVisible(self._rollback_run_no is not None)
         # While a session is in flight the strip offers Cancel and nothing else,
         # which is the rule the toolbar already follows: the others either start
@@ -1581,15 +1771,25 @@ class MeshScopeDialog(QDialog):
         self._refresh_footer()
         self._refresh_contact_notice()
 
-    def adopt_run(self, meshed_params: Dict[Tuple[str, ...], dict]):
+    def adopt_run(self, meshed_params: Dict[Tuple[str, ...], dict],
+                  source: Optional[Dict[str, Tuple[str, ...]]] = None):
         """Take a finished run's records as this panel's picture of the model.
 
         The panel outlives the run now, so it has to be told what the run
         produced. Without this it would keep planning the run that has just
         finished -- and press again would re-mesh every unit all over again --
         and the changed-field markers would stay lit on the values the run used.
+
+        The provenance comes with the records (see _source_of): a run that
+        replaced per-solid meshes with an assembly one leaves the per-solid
+        records in place, and the panel has to be told which job the files on the
+        parts actually came from -- otherwise the next press would read those
+        records, find the numbers unchanged, and keep fragments for a mesh the
+        mode no longer asks for.
         """
         self._meshed_params = dict(meshed_params or {})
+        if source is not None:
+            self._mesh_source = dict(source)
         self._first_run = self._first_run and not self._meshed_params
         self._load_params_for_current()
         self._refresh_all()
@@ -1627,20 +1827,20 @@ class MeshScopeDialog(QDialog):
 
         The stages and the heartbeat belong to a session alone -- the analysis
         has no checklist and no solver that can fall silent -- so the re-check's
-        turn shows the bar and its step and nothing above or after them.
+        turn shows the bar and its step, and leaves the row above it standing
+        empty (_BLANK_ROW). Neither row is ever dropped from the layout: what
+        the bar is saying may change, the height of what says it may not.
         """
         if self._bar_owner == "contact":
             self._progress_bar.setValue(self._contact_value)
-            self._stage_label.setText("")
-            self._stage_label.setVisible(False)
-            self._progress_label.setText(self._contact_status)
+            self._stage_label.setText(_BLANK_ROW)
+            self._progress_label.setText(self._contact_status or _BLANK_ROW)
             return
 
         self._progress_bar.setValue(self._run_value)
         marks = "　".join(f"{'●' if i <= self._stage else '○'} {name}"
                          for i, name in enumerate(self._stages))
-        self._stage_label.setText(marks)
-        self._stage_label.setVisible(bool(marks))
+        self._stage_label.setText(marks or _BLANK_ROW)
 
         text = self._status_text or "Idle"
         if self._elapsed is not None:

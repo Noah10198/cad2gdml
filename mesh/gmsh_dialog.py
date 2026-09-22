@@ -234,7 +234,11 @@ class MeshParamsWidget(QWidget):
     KEYS = ("algorithm", "elem_factor", "min_factor", "max_factor",
             "smoothing", "order")
 
-    changed = pyqtSignal()          # emitted on any user edit, not on refresh
+    # Emitted on any user edit, not on refresh, carrying the key of the field
+    # that was edited ("algorithm", "mode", ...). One editor can stand for
+    # several rows (remesh_scope_dialog), and knowing which field moved is what
+    # lets an edit reach them all without copying the fields nobody touched.
+    changed = pyqtSignal(str)
 
     def __init__(self, initial_params: Optional[dict] = None,
                  dark: bool = False, parent: Optional[QWidget] = None):
@@ -356,13 +360,20 @@ class MeshParamsWidget(QWidget):
         self._apply_values(p)
 
         # User edits only: refresh_changed() must not re-enter through these.
-        self._algo_combo.currentIndexChanged.connect(self._on_edited)
-        self._elem_factor_spin.valueChanged.connect(self._on_edited)
-        self._min_factor_spin.valueChanged.connect(self._on_edited)
-        self._max_factor_spin.valueChanged.connect(self._on_edited)
-        self._smoothing_spin.valueChanged.connect(self._on_edited)
-        self._order_combo.currentIndexChanged.connect(self._on_edited)
-        self._mode_combo.currentIndexChanged.connect(self._on_edited)
+        self._algo_combo.currentIndexChanged.connect(
+            lambda *_: self._on_edited("algorithm"))
+        self._elem_factor_spin.valueChanged.connect(
+            lambda *_: self._on_edited("elem_factor"))
+        self._min_factor_spin.valueChanged.connect(
+            lambda *_: self._on_edited("mesh_min_factor"))
+        self._max_factor_spin.valueChanged.connect(
+            lambda *_: self._on_edited("mesh_max_factor"))
+        self._smoothing_spin.valueChanged.connect(
+            lambda *_: self._on_edited("smoothing"))
+        self._order_combo.currentIndexChanged.connect(
+            lambda *_: self._on_edited("element_order"))
+        self._mode_combo.currentIndexChanged.connect(
+            lambda *_: self._on_edited("mode"))
 
     def _apply_values(self, p: Dict[str, Any]):
         """Write `p` into the fields without emitting `changed`.
@@ -421,9 +432,9 @@ class MeshParamsWidget(QWidget):
     def _section_rule(title: str) -> QWidget:
         return section_rule(title)
 
-    def _on_edited(self, *_args):
+    def _on_edited(self, key: str = ""):
         self.refresh_changed()
-        self.changed.emit()
+        self.changed.emit(key)
 
     # ---- Values ----
 
