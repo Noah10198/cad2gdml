@@ -2,7 +2,8 @@
 ImportProgressDialog - Non-modal progress dialog for CAD file import.
 
 Shows a progress bar during file reading and a completion message.
-Simplified version of MeshProgressDialog (no "view result" button).
+Simplified version of the mesh scope panel's progress line: a bar, a status
+message, and no buttons of its own.
 """
 
 from typing import Optional

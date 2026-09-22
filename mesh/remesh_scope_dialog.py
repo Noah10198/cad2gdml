@@ -48,20 +48,34 @@ the whole panel and rebuilds the rows when it changes.
 
 Double-clicking a row highlights that group's solids in the 3D view, so the row
 can stay one line however big the model gets.
+
+Why the progress bar is here too: this is the window a run is started from and
+the window the user is looking at while it runs, so it is where the run reports
+-- one bar under the parameters, and one line under the bar. The same goes for
+the other wait this panel starts: Re-check contacts reports on that bar too, one
+wait at a time, so the window a button is in is the window its wait is in
+(_bar_owner). The separate progress dialog it replaces carried a second log (the
+main window already has one), a Cancel (the toolbar turns into Cancel for the
+length of a session) and a
+"regenerate" button (the Mesh button, ten seconds later, once a value is
+edited). What was worth keeping is here: the stage markers, the heartbeat, and
+the two things to do with a model that has nothing left to plan -- look at the
+mesh, or have the units behind it judged again. Both take the footer's left
+slot, which holds the summary of the next run until the next run is a value
+edit away.
 """
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton,
+    QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from mesh.gmsh_dialog import (
     MODE_ASSEMBLY, MODE_AUTO, MODE_PER_SOLID, MeshParamsWidget,
-    _PER_SOLID_SECONDS, _fmt_duration, estimate_seconds, merge_defaults,
-    panel_palette, section_rule,
+    _fmt_duration, merge_defaults, panel_palette, section_rule,
 )
 from mesh.scope import MeshGroup, group_key, scope_text
 
@@ -297,12 +311,21 @@ class MeshScopeDialog(QDialog):
     # titled and sized after it.
     group_activated = pyqtSignal(object)
 
+    # The panel is also the progress window and it stays open after a run, so the
+    # buttons of its left slot talk to the host instead of to the dialog's own
+    # accept()/reject() machinery: the run, the contact analysis the rows are
+    # built from, the mesh in the 3D view, and the way back from a failed run.
+    mesh_requested = pyqtSignal()
+    recheck_contacts_requested = pyqtSignal()
+    regroup_accepted = pyqtSignal()
+    view_mesh_requested = pyqtSignal()
+    rollback_requested = pyqtSignal()
+
     def __init__(self, groups: Sequence[MeshGroup],
                  nodes: Sequence = (),
                  initial_params: Optional[dict] = None,
                  dark: bool = False,
                  first_run: bool = False,
-                 last_run: Optional[dict] = None,
                  preselect: Optional[Sequence[int]] = None,
                  meshed_params: Optional[Dict[Tuple[str, ...], dict]] = None,
                  parent: Optional[QWidget] = None):
@@ -318,13 +341,54 @@ class MeshScopeDialog(QDialog):
         self._dark = dark
         self._pal = panel_palette(dark)
         self._first_run = first_run
-        self._last_run = last_run or None
 
         # What each group's existing mesh was made with, keyed by its member set
         # (see scope.group_key). The opening values, the baseline of the
         # changed-field markers and the reuse test all read this one dict.
         self._meshed_params: Dict[Tuple[str, ...], dict] = dict(meshed_params or {})
         self._defaults: Dict[str, Any] = merge_defaults(initial_params)
+
+        # The run the panel is watching. The panel is the progress window now --
+        # a session reports into it and it stays open when the session ends -- so
+        # it holds the bar's state, and the flag that keeps `Mesh` from starting a
+        # second session on top of the one already running.
+        self._running = False
+        self._run_no = 0
+        # One bar, two waits, and neither is allowed to overwrite the other:
+        # the session's percentage and line here, the re-checked analysis's with
+        # the state it reports in (set_contact_progress). `_bar_owner` says
+        # whose reading the bar is showing -- one at a time -- and a session
+        # starts as the owner, so a panel that has never run anything reads
+        # "Idle" at zero until a run or a re-check takes the bar
+        # (_refresh_status).
+        self._run_value = 0
+        self._contact_value = 0
+        self._contact_status = ""
+        self._bar_owner = "run"
+        # Whether the analysis now reporting is one the user asked for *here*.
+        # The host runs the same analysis by itself (after an import, after a
+        # part is moved), and that one is not a wait this panel started, so it
+        # does not get this panel's bar (set_contact_state).
+        self._recheck_asked = False
+        self._has_mesh = bool(self._meshed_params)
+        # What the contact analysis behind the rows is doing: "done" until the
+        # host says otherwise (see set_contact_state). The rows are per-solid
+        # while it runs, and that is a wait, not a verdict -- so the panel says
+        # which of the two it is.
+        self._contact_state = "done"
+        self._contact_detail = ""
+        # Set the moment a session is planned from the rows (start_run) and
+        # never cleared: from then on the rows are what a run was reported
+        # against, so a late contact analysis offers itself instead of
+        # rewriting them (_late_components, set_components).
+        self._rows_committed = False
+        self._late_components: Optional[List[MeshGroup]] = None
+        self._rollback_run_no: Optional[int] = None
+        self._stages: List[str] = []
+        self._stage = -1
+        self._status_text = "Idle"
+        self._elapsed: Optional[float] = None
+        self._idle: Optional[float] = None
         # Which row the parameter block edits (an index into _groups), and the
         # mode the panel is set to. The mode is not one unit's business -- it
         # decides what a unit *is* (a whole group or one solid of it), so it is a
@@ -363,12 +427,14 @@ class MeshScopeDialog(QDialog):
     def _seed_unit_params(self):
         """Opening values for every unit key the panel can show, once per key.
 
-        A component reads the record of its own mesh, a solid its own record
-        when it has one. A per-solid run leaves the records per solid, so
-        reading those back is the only way a solid's own numbers survive a
-        re-open -- without it the whole component falls back to the panel's
-        defaults and every solid is shown the first one's values, which then
-        reads as "everything changed" against meshes that did not.
+        A component reads the record of its own mesh, and failing that the one
+        all of its parts carry (_parts_record): a unit regrouped late starts on
+        the numbers the user gave those parts. A solid reads its own record when
+        it has one. A per-solid run leaves the records per solid, so reading
+        those back is the only way a solid's own numbers survive a re-open --
+        without it the whole component falls back to the panel's defaults and
+        every solid is shown the first one's values, which then reads as
+        "everything changed" against meshes that did not.
 
         Keys that are already there are left alone: this runs again when a
         late contact analysis hands the panel new components (set_components),
@@ -378,7 +444,8 @@ class MeshScopeDialog(QDialog):
             key = group_key(comp.entry_ids)
             if key not in self._unit_params:
                 self._unit_params[key] = dict(
-                    self._meshed_params.get(key) or self._defaults)
+                    self._meshed_params.get(key) or self._parts_record(comp)
+                    or self._defaults)
             for eid in comp.entry_ids:
                 part_key = group_key([eid])
                 if part_key not in self._unit_params:
@@ -405,17 +472,36 @@ class MeshScopeDialog(QDialog):
 
         Returns whether anything changed: the caller logs the regrouping,
         and a second call with the same components is a no-op.
+
+        Rows that a run was planned from are never rebuilt. They are what that
+        run's progress and its "kept / meshed" report were about, so swapping
+        them afterwards leaves the report describing units that are no longer
+        on screen. The answer is held instead and offered in the notice line,
+        where the user takes it with the Regroup button (_on_regroup).
         """
         new = list(groups)
         if [group_key(g.entry_ids) for g in new] == \
                 [group_key(g.entry_ids) for g in self._components]:
+            # Nothing to adopt and nothing to offer: the answer agrees with
+            # what is on screen, so the notice has no news either.
+            self._late_components = None
+            self._refresh_contact_notice()
             return False
+        if self._running or self._rows_committed:
+            self._late_components = new
+            self._refresh_contact_notice()
+            return False
+        self._apply_components(new)
+        return True
+
+    def _apply_components(self, new: Sequence[MeshGroup]):
+        """Rebuild the rows around `new`, the ticks still on their solids."""
         ticked = {eid for i in self.selected_indices()
                   for eid in self._groups[i].entry_ids}
         was = self.current_index()
         unit_key = (group_key(self._groups[was].entry_ids)
                     if was is not None else None)
-        self._components = new
+        self._components = list(new)
         self._seed_unit_params()
         self._groups = self._units_for_mode(self._per_solid)
         self._rebuild_rows()
@@ -432,7 +518,153 @@ class MeshScopeDialog(QDialog):
         # The list just changed length by an order of magnitude (one row per
         # solid, then one per group), so the window has to be re-sized for it.
         self._settle_geometry()
-        return True
+
+    def _on_regroup(self):
+        """The notice's Regroup button: take the answer the rows were spared."""
+        late = self._late_components
+        if late is None or self._running:
+            return
+        self._late_components = None
+        self._apply_components(late)
+        self._refresh_contact_notice()
+        self.regroup_accepted.emit()
+
+    def set_contact_state(self, state: str, detail: str = ""):
+        """What the contact analysis is doing: "running", "failed" or "done".
+
+        The host owns the analysis, so it is the host that says what it is up
+        to -- the panel never asks a runner anything, the same rule its progress
+        follows. "running" is the state that matters: the analysis can land well
+        after the panel is open, and until it does every solid is a unit of its
+        own. That is the only honest answer available (nothing is known to touch
+        anything), but a per-solid list for a model that is one assembly reads
+        as the tool's verdict unless the panel says it is still waiting -- and
+        the chips cannot say it, because `Per-solid` is what they mean on a
+        model the analysis has already cleared.
+
+        It is also the state of the progress bar, for a re-checked analysis: a
+        re-check is one of the two waits this panel owns, the session being the
+        other, and the number that goes with this state arrives separately
+        (set_contact_progress), since it is written many times a second and
+        re-reading the notice for each tick would be work that never reaches the
+        screen.
+        """
+        self._contact_state, self._contact_detail = state, detail
+        if state == "running":
+            # A re-check is a wait started from this panel, so it reports on
+            # this panel's bar the way a session does -- but only the re-check:
+            # the host runs the same analysis on its own after an import or a
+            # move, and that one leaves the bar alone. It is not a wait the user
+            # began here, and the bar is the button's wait; a panel opened onto
+            # one of those reads zero and idle, which is what its next Mesh
+            # press is about to fill.
+            #
+            # A session in flight also keeps the bar it took, even for our own
+            # re-check: a check cannot be started during a session, but can
+            # still be running when one begins, and the session was asked for
+            # last.
+            if self._recheck_asked and not self._running:
+                self._bar_owner = "contact"
+                self._contact_value = 0
+                self._contact_status = "Contact analysis · starting…"
+        else:
+            # Landed, and "was this one ours" is answered either way: the next
+            # check has to ask for the bar from its own press.
+            self._recheck_asked = False
+            if self._bar_owner == "contact":
+                # The bar reads the verdict by the session's own rule
+                # (finish_run): full when the analysis ran to the end, back to
+                # zero when it did not. It keeps the bar rather than handing it
+                # back, so the line under it is the analysis's last word -- the
+                # detail behind a failure belongs to the notice band, which says
+                # it above the rows it is about (_refresh_contact_notice).
+                self._contact_value = 100 if state == "done" else 0
+                self._contact_status = ("Contact analysis done" if state == "done"
+                                        else "Contact analysis incomplete")
+        self._refresh_status()
+        self._refresh_contact_notice()
+        self._refresh_footer()
+        if not self.isVisible():
+            # The panel is sized before it is shown, and the host pushes this
+            # while it is still off screen, so a notice already on it has to be
+            # paid for in that same pass: a window that grows the moment it
+            # appears is the jump _settle_geometry exists to avoid.
+            self._settle_geometry()
+
+    def set_contact_progress(self, value: int, message: str = ""):
+        """How far the analysis has got, in percent.
+
+        The same number the status bar's own bar carries: two bars, one wait.
+        That one is the reading that survives with this panel closed -- and the
+        only one there when the re-check is started from a panel the user then
+        closes -- while this one is the reading of the window the button is in,
+        and only while that check is the panel's bar (_bar_owner): the analysis
+        the host runs by itself keeps its number here unseen.
+
+        Written to the analysis's own value, not to the widget: a session that
+        owns the bar must not be captioned with the check's step.
+        """
+        self._contact_value = max(0, min(100, int(value)))
+        if message:
+            self._contact_status = f"{message} {self._contact_value}%"
+        self._refresh_status()
+
+    def _on_recheck_pressed(self):
+        """Re-check contacts, and mark the answer as this panel's wait.
+
+        The button asks the host for a run of the analysis, and the host runs
+        the same one on its own account after an import or a move; the flag is
+        what keeps the two apart on the bar (set_contact_state).
+        """
+        self._recheck_asked = True
+        self.recheck_contacts_requested.emit()
+
+    def _refresh_contact_notice(self):
+        """The one line that keeps `Per-solid` from reading as a verdict.
+
+        Body ink (`title`), not the dim section grey a heading over the list
+        would take: this line is news about the rows, and the offer it carries
+        is something to act on. The failure line keeps the warning colour --
+        that one is the panel reporting that a background job did not finish,
+        and colour is what makes it read as one.
+        """
+        p = self._pal
+        state = self._contact_state
+        if state == "running":
+            text = ("Contact analysis running: the units below are regrouped "
+                    "when it lands." if not self._rows_committed else
+                    "Contact analysis running: the rows stay on the units "
+                    "meshed here.")
+            colour = p["title"]
+        elif state == "failed":
+            # Two different situations behind one failure: a panel that never
+            # had an answer is all singletons, one whose re-check failed still
+            # shows what the last analysis found.
+            found = any(len(g.entry_ids) > 1 for g in self._components)
+            text = (f"Contact analysis incomplete ({self._contact_detail}): the "
+                    "units are the ones the last analysis found." if found else
+                    f"Contact analysis incomplete ({self._contact_detail}): "
+                    "every solid is listed on its own.")
+            colour = p["changed_border"]
+        elif self._late_components:
+            # The answer disagrees with the rows and the rows are a run's, so
+            # it waits here for the button beside it rather than rewriting them.
+            text = (f"Contact analysis finished: it makes "
+                    f"{len(self._late_components)} unit(s). The rows stay on "
+                    "the units meshed here.")
+            colour = p["title"]
+        else:
+            # Emptied, not hidden: the band keeps the height it was given at
+            # construction (_build_contact_notice), so the notice arriving and
+            # leaving moves nothing on screen.
+            self._notice_text.setText("")
+            self._regroup_btn.setVisible(False)
+            return
+        self._notice_text.setText(text)
+        self._notice_text.setStyleSheet(
+            f"color: {colour}; font-size: 11.5px;")
+        self._regroup_btn.setVisible(bool(self._late_components)
+                                     and not self._running)
 
     def _settle_geometry(self):
         """Give the window its final height before it is ever shown.
@@ -485,6 +717,7 @@ class MeshScopeDialog(QDialog):
         bl.setContentsMargins(13, 12, 13, 0)
         bl.setSpacing(9)
         bl.addWidget(self._build_scope_line())
+        bl.addWidget(self._build_contact_notice())
         bl.addWidget(self._build_rows(), 1)
         root.addWidget(body, 1)
 
@@ -501,6 +734,12 @@ class MeshScopeDialog(QDialog):
         self._params.setSizePolicy(QSizePolicy.Policy.Preferred,
                                    QSizePolicy.Policy.Fixed)
         pl.addWidget(self._params)
+
+        # Under the parameters, not beside them: the panel is read top-down as
+        # what to mesh, with what numbers, and then how far a run has got. The
+        # rule that opens it is the same one that separates the parameter block's
+        # own Advanced section.
+        pl.addWidget(self._build_progress())
         root.addWidget(params_body)
 
         root.addWidget(self._build_footer())
@@ -528,6 +767,39 @@ class MeshScopeDialog(QDialog):
         h.addWidget(self._all_btn)
         h.addWidget(self._none_btn)
         return line
+
+    def _build_contact_notice(self) -> QWidget:
+        """The line between the ticks and the rows, empty until it has news.
+
+        It belongs here, directly above the list it is about: what the rows say
+        (`Per-solid` / `Assembly conformal`) is only an answer once the contact
+        analysis has landed, and that is exactly the kind of thing a chip cannot
+        say on its own. Empty in the normal case -- an empty band, not a
+        permanent paragraph about a background job -- and the band is reserved:
+        the notice lands on a window that is already on screen, and a row that
+        materialises then is a row the layout has to find room for, which drops
+        the list and the footer below it. Reserved at the button's height, so
+        the button's own appearance costs nothing either.
+        """
+        self._notice = QFrame()
+        n = QHBoxLayout(self._notice)
+        n.setContentsMargins(0, 0, 0, 0)
+        n.setSpacing(8)
+        self._notice_text = QLabel()
+        self._notice_text.setWordWrap(True)
+        n.addWidget(self._notice_text, 1)
+        # The button is the point of the line it sits on: an answer that
+        # arrived after the rows were already a run's is offered, not applied
+        # (set_components), and this is where the user takes it.
+        self._regroup_btn = self._plain("Regroup")
+        self._regroup_btn.setToolTip(
+            "Rebuild the rows from the contact analysis that landed after the "
+            "run")
+        self._regroup_btn.clicked.connect(self._on_regroup)
+        self._regroup_btn.setVisible(False)
+        n.addWidget(self._regroup_btn, 0, Qt.AlignmentFlag.AlignTop)
+        self._notice.setMinimumHeight(25)
+        return self._notice
 
     def _build_rows(self) -> QWidget:
         """The group list, in a scroll area with a floor and no ceiling.
@@ -569,31 +841,102 @@ class MeshScopeDialog(QDialog):
                              QSizePolicy.Policy.Expanding)
         return scroll
 
+    def _build_progress(self) -> QWidget:
+        """The bar and the two rows that say what the bar is doing.
+
+        Two rows, and two of them at every moment of a run: the stages on the
+        first (what is behind, what is on, what is ahead) and the step it is on
+        with its heartbeat on the second. Folded into one row they were longer
+        than the panel is wide as soon as the step name was, so the row wrapped
+        and unwrapped while the run was being watched -- and the panel's height
+        moved with it.
+        """
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(5)
+        v.addWidget(section_rule("Progress"))
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setFixedHeight(16)
+        v.addWidget(self._progress_bar)
+
+        # The stage row is up only while there are stages: a run that is one job
+        # has no checklist, and an empty row says something failed to load.
+        self._stage_label = QLabel()
+        self._stage_label.setWordWrap(True)
+        self._stage_label.setVisible(False)
+        self._progress_label = QLabel()
+        self._progress_label.setWordWrap(True)
+        for lb in (self._stage_label, self._progress_label):
+            lb.setStyleSheet(
+                f"QLabel {{ color: {self._pal['foot_text']}; font-size: 11.5px; }}")
+        v.addWidget(self._stage_label)
+        v.addWidget(self._progress_label)
+        self._refresh_status()
+        return box
+
     def _build_footer(self) -> QWidget:
-        """The summary line and the buttons, as one strip (`.mkf`)."""
+        """The buttons, as one strip: the model's on the left, the pair right.
+
+        The left end holds what a run that just ended here leaves to do -- look
+        at the mesh it produced, or undo it -- beside Re-check contacts, which
+        is about the model rather than a run. The old window put "view result"
+        and "regenerate" in a footer of its own, which meant the one thing the
+        user wants next was on a window the user had to keep open.
+
+        No summary line between them: the rows say which units the ticks picked
+        and the blue button says how many parts a press would mesh, so a
+        sentence in between only said it all a second time.
+        """
         p = self._pal
         foot = QFrame()
         foot.setObjectName("scopeFoot")
         f = QHBoxLayout(foot)
         f.setContentsMargins(11, 9, 11, 9)
         f.setSpacing(9)
-        self._foot_label = QLabel()
-        self._foot_label.setWordWrap(True)
-        self._foot_label.setTextFormat(Qt.TextFormat.RichText)
-        f.addWidget(self._foot_label, 1)
+
+        self._rollback_btn = self._plain("Roll back")
+        self._rollback_btn.clicked.connect(
+            lambda: self.rollback_requested.emit())
+        f.addWidget(self._rollback_btn)
+        # Blue like the run button, and grey while it cannot be pressed: it is
+        # only on screen when there is nothing left to mesh and the result *is*
+        # the next thing to look at, so it makes the same promise the run button
+        # does -- and the two are never on screen together.
+        self._view_btn = self._primary("View Mesh")
+        self._view_btn.clicked.connect(lambda: self.view_mesh_requested.emit())
+        f.addWidget(self._view_btn)
+        # The rows are one answer to "which parts belong together", and it is
+        # the answer of a background job that ran on the model as it was then.
+        # The button is the second opinion: run it again, and the rows are
+        # rebuilt from what it finds (set_components).
+        # Blue in every state too, grey only while it cannot run: it is about the
+        # model rather than the next run, and a white button beside a blue one
+        # reads as the lesser action, which this is not.
+        self._recheck_btn = self._primary("Re-check contacts")
+        self._recheck_btn.setToolTip(
+            "Run the contact analysis again and regroup the units")
+        self._recheck_btn.clicked.connect(self._on_recheck_pressed)
+        f.addWidget(self._recheck_btn)
+
+        # Absorbs the spare width, holding the pair against the right edge.
+        f.addStretch(1)
 
         cancel = self._plain("Cancel")
         cancel.clicked.connect(self.reject)
         f.addWidget(cancel)
-        self._ok_btn = self._primary()
-        self._ok_btn.clicked.connect(self.accept)
+        self._ok_btn = self._primary(is_default=True)
+        # Not accept(): the session starts under this window and the window stays
+        # open to carry its progress, so the button asks the host for a run.
+        self._ok_btn.clicked.connect(lambda: self.mesh_requested.emit())
         f.addWidget(self._ok_btn)
 
         foot.setStyleSheet(
             f"#scopeFoot {{ background: {p['foot_bg']};"
-            f" border-top: 1px solid {p['foot_border']}; }}"
-            f" #scopeFoot QLabel {{ background: transparent; border: none;"
-            f" color: {p['foot_text']}; font-size: 11.5px; }}")
+            f" border-top: 1px solid {p['foot_border']}; }}")
         return foot
 
     # -- button factories ----------------------------------------------
@@ -611,24 +954,42 @@ class MeshScopeDialog(QDialog):
         return b
 
     def _plain(self, text: str) -> QPushButton:
+        """The white button: the way out, and the presses that are not the task."""
         p = self._pal
         b = QPushButton(text)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setMinimumHeight(25)
+        # Fixed: a button is the width of its word, so a strip of them reads as a
+        # strip of buttons rather than a row of stretched placeholders.
+        b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         b.setStyleSheet(
             f"QPushButton {{ background: {p['btn_bg']};"
             f" border: 1px solid {p['btn_border']}; border-radius: 6px;"
             f" color: {p['btn_text']}; padding: 3px 13px; font-size: 12px; }}"
             f"QPushButton:hover {{ border-color: {p['pri_bg']};"
-            f" color: {p['pri_bg']}; }}")
+            f" color: {p['pri_bg']}; }}"
+            # Dimmed, not merely inert: the rule above overrides Qt's own
+            # disabled look, so a session in flight would otherwise leave these
+            # on screen looking exactly as pressable as before.
+            f"QPushButton:disabled {{ background: {p['row_off_bg']};"
+            f" border-color: {p['row_off_border']};"
+            f" color: {p['title_off']}; }}")
         return b
 
-    def _primary(self) -> QPushButton:
+    def _primary(self, text: str = "", is_default: bool = False) -> QPushButton:
+        """The blue button: the press this strip is asking for.
+
+        Grey while it is unavailable, which is what the colour is for: a press
+        that cannot be made has to stop looking like one. `is_default` belongs to
+        the run's button alone (it is the one Enter fires); the other two are
+        blue without taking the key, because they are on screen as the thing to
+        do next rather than as the window's default.
+        """
         p = self._pal
-        b = QPushButton()
+        b = QPushButton(text)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setMinimumHeight(25)
-        b.setDefault(True)
+        b.setDefault(is_default)
         b.setStyleSheet(
             f"QPushButton {{ background: {p['pri_bg']};"
             f" border: 1px solid {p['pri_border']}; border-radius: 6px;"
@@ -899,17 +1260,27 @@ class MeshScopeDialog(QDialog):
         return dict(self._unit_params[group_key(group.entry_ids)])
 
     def _meshed_record(self, unit: MeshGroup) -> Optional[dict]:
-        """The values the mesh covering `unit` was made with, or None.
+        """The values the mesh *of this unit* was made with, or None.
 
-        A group mesh is recorded per group and a per-solid one per part, so a
-        component is also covered when *every* one of its parts carries its own
-        record with the same values -- which is exactly what a forced per-solid
-        run leaves behind. Without this, an A/B run would make the panel report
-        the whole model as unmeshed the next time it is opened.
+        Its own member set only -- never the parts' records, however well those
+        agree. A unit with contact faces is meshed as one job, and a per-solid
+        run leaves the other mesh: a facet set of its own on every shared face,
+        which is the mesh the unit exists to replace
+        (doc/assembly_fragment_gdml.md §1). Letting the parts stand in for it
+        would report a unit that has just been regrouped as already meshed, and
+        the panel would offer nothing for the run the regroup made necessary.
         """
-        own = self._meshed_params.get(group_key(unit.entry_ids))
-        if own:
-            return own
+        return self._meshed_params.get(group_key(unit.entry_ids))
+
+    def _parts_record(self, unit: MeshGroup) -> Optional[dict]:
+        """What every part of `unit` was meshed with, when they all agree.
+
+        The other half of what the records answer: which numbers the unit opens
+        on, not whether it is meshed. A per-solid run's values are the ones the
+        user typed for these parts, so a regrouped unit starts from them and the
+        changed-field markers stay quiet -- while _meshed_record() leaves the
+        unit with a job to do.
+        """
         if not unit.coupled:
             return None
         per_part = [self._meshed_params.get((eid,)) for eid in unit.entry_ids]
@@ -935,9 +1306,12 @@ class MeshScopeDialog(QDialog):
     def _reused(self, group: MeshGroup) -> bool:
         """Does `group` already hold the mesh these values would produce?
 
-        The same comparison the changed-field markers show: a group whose values
-        are the ones its mesh was made with has nothing to redo, and running gmsh
-        again for the facets it already has only costs time. A group whose run
+        The comparison the changed-field markers show, over the record of the
+        unit's *own* mesh: a group whose values are the ones its mesh was made
+        with has nothing to redo, and running gmsh again for the facets it
+        already has only costs time. The parts' records do not count here, so a
+        unit that has just been regrouped is never reused on the strength of the
+        per-solid mesh it is meant to replace (_meshed_record). A group whose run
         failed has no recorded mesh, so it is never reused by accident.
         """
         record = self._meshed_record(group)
@@ -972,7 +1346,7 @@ class MeshScopeDialog(QDialog):
         if idx is None:
             return
         target = self._groups[idx]
-        made_with = self._meshed_record(target)
+        made_with = self._meshed_record(target) or self._parts_record(target)
         self._params.set_params(self.params_for(target))
         self._params.set_baseline(_to_run_keys(made_with) if made_with else None,
                                   note="its current mesh" if made_with else "")
@@ -1057,80 +1431,226 @@ class MeshScopeDialog(QDialog):
             row.set_mode(mode, mode != g.mode)
             row.set_tooltip(self._row_tooltip(g))
 
-    def _estimate_seconds(self) -> Optional[float]:
-        """Rough duration for what this run will actually mesh.
-
-        Summed over the planned groups, each with its own values, not one ratio
-        over the whole selection: a scoped re-mesh halves the work of a full one,
-        and groups already meshed add nothing to it.
-        """
-        groups = self._planned_groups()
-        if not groups:
-            return None
-        total = 0.0
-        for g in groups:
-            secs = estimate_seconds(self.params_for(g), g.n_parts, self._last_run)
-            total += secs if secs is not None else _PER_SOLID_SECONDS * g.n_parts
-        return total
-
-    def _unit_noun(self) -> str:
-        """What a row is in this mode: a group, or one solid shown per-solid."""
-        return "part" if self._per_solid else "group"
-
-    def _footer_text(self) -> str:
-        """One line: what will be meshed, what will not, and how long.
-
-        The same sentence the system log will open this run with, so the header
-        the user reads afterwards is one they have already seen here.
-        """
-        planned = self._planned_groups()
-        reused = self.reused_groups()
-        kept = self._kept_groups()
-        noun = self._unit_noun()
-        ink = self._pal["foot_ink"]
-        head = f'<b style="color:{ink}">{len(planned)} {noun}(s)'
-        # In per-solid mode the unit *is* a part, and "5 part(s) · 5 part(s)" is
-        # the same number said twice. The part count only carries news when a row
-        # can be a whole group.
-        if noun != "part":
-            head += f' · {sum(g.n_parts for g in planned)} part(s)'
-        head += "</b>"
-        if reused or kept:
-            why = []
-            if kept:
-                why.append(f"{len(kept)} unticked")
-            if reused:
-                why.append(f"{len(reused)} already meshed with these values")
-            head += (f'　·　keep {len(reused) + len(kept)} {noun}(s) '
-                     f'({", ".join(why)})')
-        secs = self._estimate_seconds()
-        if secs is None:
-            head += ("　·　nothing to mesh, the ticks already match the meshes"
-                     if self.selected_indices()
-                     else f"　·　no {noun} ticked, the model stays as it is")
-        else:
-            head += f"　·　estimated ≈ {_fmt_duration(secs)}"
-        return head
-
     def _refresh_footer(self):
-        """The summary line and the one button that starts the run.
+        """The buttons' state, and which of them the ticks and the run allow.
 
-        Nothing to mesh means neither, so the strip falls back to Cancel alone:
-        "0 group(s) · nothing to mesh" only restates the ticks, and a Close
-        button next to Cancel was the same way out offered twice. The line is
-        emptied rather than hidden so it keeps pushing the buttons right.
+        The run button is a promise about the *next* run, and once every ticked
+        unit is meshed with the values it holds there is no next run to make --
+        until a number is edited, at which point it comes back. A run that just
+        ended here takes its place: View Mesh. So the left end shows the one or
+        the other, never both, and never a disabled button that would mesh
+        nothing. Re-check contacts stands beside it in every state: it is about
+        the model, not about a run, and it is the one thing to reach for when the
+        grouping itself is in doubt.
+
+        Grey is the answer to "can this be pressed": a session in flight leaves
+        all three on screen, and the colour is the only thing that says which of
+        them is waiting for it.
         """
         planned = self._planned_groups()
         n_parts = sum(g.n_parts for g in planned)
-        self._foot_label.setText(self._footer_text() if planned else "")
+        show_view = self._has_mesh and not planned
+        self._view_btn.setVisible(show_view)
+        self._rollback_btn.setVisible(self._rollback_run_no is not None)
+        # While a session is in flight the strip offers Cancel and nothing else,
+        # which is the rule the toolbar already follows: the others either start
+        # a second session or rewrite what the first one is writing into. The
+        # re-check has a wait of its own on top of that: while the analysis it
+        # would restart is running there is nothing to re-run.
+        for btn in (self._view_btn, self._rollback_btn):
+            btn.setEnabled(not self._running)
+        self._recheck_btn.setEnabled(
+            not self._running and self._contact_state != "running")
         self._ok_btn.setVisible(bool(planned))
+        self._ok_btn.setEnabled(bool(self.selected_indices())
+                               and not self._running)
         if not planned:
             return
-        self._ok_btn.setEnabled(bool(self.selected_indices()))
         if self._first_run:
             self._ok_btn.setText(f"Mesh {n_parts} part(s)")
         else:
             self._ok_btn.setText(f"Re-mesh {n_parts} part(s)")
+
+    # ----------------------------------------------------------------
+    # Progress
+    # ----------------------------------------------------------------
+
+    # Called by the host while a session runs under this panel, and by nothing
+    # else: the panel never asks a runner anything. Nothing here writes the bar
+    # widget directly either -- every writer is a value of its own wait, and
+    # _refresh_status is the one place that moves the bar to the owner's.
+
+    def start_run(self, run_no: int, scope_text: str = ""):
+        """A run was accepted here: reset the bar and lock the button.
+
+        Locked because there is one session at a time, and this is the button
+        that would start a second one. The panel is not closed -- it is the
+        progress window now -- and a rerun is the same button once this one ends.
+
+        Reset also takes the bar off the contact analysis, which may have been
+        showing there: the run just asked for is the wait to watch, and a landed
+        check is a reading that can wait its turn.
+
+        This is also what commits the rows: from here on they are the units a
+        run is reported against, and a contact analysis landing afterwards is
+        offered instead of applied (_rows_committed, set_components).
+        """
+        self._run_no = run_no
+        self._running = True
+        self._rows_committed = True
+        self._stages = []
+        self._stage = -1
+        self._elapsed = None
+        self._idle = None
+        self._status_text = f"run #{run_no}"
+        if scope_text:
+            self._status_text += f" · {scope_text}"
+        self._run_value = 0
+        self._bar_owner = "run"
+        self._refresh_status()
+        self._refresh_footer()
+        # The notice's offer is a button, and buttons follow the strip's rule:
+        # off while a session runs.
+        self._refresh_contact_notice()
+
+    def set_progress(self, value: int, status: str = ""):
+        """The bar, in percent of the whole session.
+
+        The session, not the job: a three-group run would otherwise fill and
+        empty the bar three times, which reads as three runs.
+        """
+        self._run_value = max(0, min(100, int(value)))
+        if status:
+            self._status_text = status
+        self._refresh_status()
+
+    def set_status(self, text: str):
+        """Replace the line, leaving the bar where it is."""
+        self._status_text = text
+        self._refresh_status()
+
+    def set_stages(self, labels: Sequence[str]):
+        """The stages the run passes through, in assembly mode.
+
+        One stage is not a list, it is the name of the job, so it goes on the
+        line as the status instead of as a checklist of one item.
+        """
+        names = list(labels)
+        self._stages = names if len(names) > 1 else []
+        self._stage = 0 if self._stages else -1
+        if len(names) == 1:
+            self._status_text = names[0]
+        self._refresh_status()
+
+    def set_stage(self, index: int, message: str = ""):
+        """Move the markers to stage `index`, and optionally say what it is on."""
+        self._stage = index
+        if message:
+            self._status_text = message
+        self._refresh_status()
+
+    def set_heartbeat(self, elapsed: Optional[float],
+                      idle: Optional[float] = None):
+        """How long the run has been going, and how long since gmsh last spoke.
+
+        The second number is the point: a bar that has not moved in two minutes
+        is only explained by a silent solver if the silence is on screen.
+        """
+        self._elapsed = elapsed
+        self._idle = idle
+        self._refresh_status()
+
+    def finish_run(self, text: str, completed: bool):
+        """The session ended -- successfully or not -- and its last line stays.
+
+        The bar follows the session's own rule, the same one the status bar
+        follows, because the two bars are read as one reading: full only when
+        the session ran to the end, and back to zero when it was stopped, since
+        a cancelled session has no finished work to show a bar for -- and the
+        contact analysis reads its verdict by the same rule (set_contact_state).
+        What happened is in the line, and in the log.
+        """
+        self._running = False
+        self._stages = []
+        self._stage = -1
+        self._elapsed = None
+        self._idle = None
+        self._status_text = text
+        self._run_value = 100 if completed else 0
+        self._refresh_status()
+        self._refresh_footer()
+        self._refresh_contact_notice()
+
+    def adopt_run(self, meshed_params: Dict[Tuple[str, ...], dict]):
+        """Take a finished run's records as this panel's picture of the model.
+
+        The panel outlives the run now, so it has to be told what the run
+        produced. Without this it would keep planning the run that has just
+        finished -- and press again would re-mesh every unit all over again --
+        and the changed-field markers would stay lit on the values the run used.
+        """
+        self._meshed_params = dict(meshed_params or {})
+        self._first_run = self._first_run and not self._meshed_params
+        self._load_params_for_current()
+        self._refresh_all()
+
+    def set_view_mesh_available(self, available: bool):
+        """Is there a mesh to look at? A fact about the model, not about a run:
+        a failed run must not take the previous preview away."""
+        self._has_mesh = bool(available)
+        self._refresh_footer()
+
+    def show_rollback(self, run_no: int):
+        """Offer the way back to the run before the one that just failed."""
+        self._rollback_run_no = run_no
+        self._rollback_btn.setText(f"Roll back to #{run_no}")
+        self._refresh_footer()
+
+    def hide_rollback(self):
+        self._rollback_run_no = None
+        self._refresh_footer()
+
+    def _refresh_status(self):
+        """Two rows: the stages of the run above, the step it is on below.
+
+        Two rows and not one: the two of them together are wider than the panel
+        as soon as the step name is long, and a row that wraps mid-run takes the
+        panel's height with it.
+
+        The one bar moves to whichever wait owns it (_bar_owner), and every
+        writer hands it a value instead of setting it: a session owns it from
+        the press of Mesh, a re-check from the press of Re-check contacts, and
+        each keeps its own percentage and its own line, so neither can leave the
+        other's number or step on screen. The analysis the host runs by itself
+        owns nothing here -- it is not a wait this panel started -- so a panel
+        open across one still reads its own last run, or zero and idle.
+
+        The stages and the heartbeat belong to a session alone -- the analysis
+        has no checklist and no solver that can fall silent -- so the re-check's
+        turn shows the bar and its step and nothing above or after them.
+        """
+        if self._bar_owner == "contact":
+            self._progress_bar.setValue(self._contact_value)
+            self._stage_label.setText("")
+            self._stage_label.setVisible(False)
+            self._progress_label.setText(self._contact_status)
+            return
+
+        self._progress_bar.setValue(self._run_value)
+        marks = "　".join(f"{'●' if i <= self._stage else '○'} {name}"
+                         for i, name in enumerate(self._stages))
+        self._stage_label.setText(marks)
+        self._stage_label.setVisible(bool(marks))
+
+        text = self._status_text or "Idle"
+        if self._elapsed is not None:
+            text += f" · {_fmt_duration(self._elapsed)}"
+            if self._idle is not None:
+                # gmsh prints nothing for long stretches while it works, so a
+                # silent job is only alarming once it is stated as a duration.
+                text += (" · solver working" if self._idle < 2
+                         else f" · quiet for {int(self._idle)} s")
+        self._progress_label.setText(text)
 
     # ----------------------------------------------------------------
     # Result

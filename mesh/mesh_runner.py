@@ -96,6 +96,28 @@ DEFAULT_TIMEOUT_ASSEMBLY = 15 * 60
 _OVERLAP_BUDGET = 400_000
 _MAX_OVERLAP_PAIRS = 8
 
+# How fast the bar crosses a stage whose length is unknown. Only a gmsh run is
+# in that position, and it is most of the wall time of a job: the bar is driven
+# by gmsh's own progress lines first (see _note_gmsh_line), elapsed time only
+# fills the silences in between. The curve is asymptotic -- the ceiling of the
+# stage is still written only where the stage really ends, so a creeping bar can
+# never be read as "this stage is over".
+STAGE_CREEP_S = 30.0
+
+# ---- Driving the bar from gmsh's own output -------------------------------
+# gmsh announces its meshing stages on stdout and then reports how far into each
+# one it is, e.g.
+#   Info    : Meshing 2D...
+#   Info    : [ 40%] Meshing surface 5 (Plane, Frontal-Delaunay)
+# so the bar shows what gmsh is actually doing instead of guessing from the
+# clock. Each stage fills its own slice of the band the run was given; the 1D
+# pass is a rounding error next to the surface solve, so it gets the small one.
+_GMSH_STAGE_RE = re.compile(r"Meshing\s+(\dD)\s*\.\.\.")
+_GMSH_PERCENT_RE = re.compile(r"\[\s*(\d+)%\]")
+_GMSH_1D_SLICE = (0.0, 0.2)
+_GMSH_MESH_SLICE = (0.2, 1.0)
+_GMSH_STAGE_SLICE = {"1D": _GMSH_1D_SLICE}
+
 
 # ---- gmsh liveness --------------------------------------------------------
 # A gmsh job that prints nothing is not necessarily a stuck one: during the 2D
@@ -219,6 +241,14 @@ class MeshRunner(QThread):
         self._cancelled = False
         self._degraded = False
 
+        # The stage the bar is currently inside: (floor, ceiling) plus the text
+        # that goes with it, or None when no gmsh run is in flight. See
+        # _begin_stage / _creep / _note_gmsh_line.
+        self._stage_band: Optional[Tuple[int, int]] = None
+        self._stage_msg = ""
+        self._stage_value = 0
+        self._gmsh_slice = _GMSH_1D_SLICE
+
         # "auto" -> follow the contact analysis; if it has not finished, go
         # per-solid (conservative and no waiting)
         if mode == "auto":
@@ -316,7 +346,13 @@ class MeshRunner(QThread):
                 continue
 
             node_label = node.name or node.entry_id
+            # This solid's own slice of the bar. The gmsh run inside it takes
+            # most of its wall time and reports nothing, so the slice is entered
+            # at its floor and crossed from the clock (_creep); the old fixed
+            # +5 step kept every emit of a run inside its first two percent,
+            # which is why a long run showed no colour at all.
             pct = int((idx / total) * 85)
+            band_end = max(pct + 5, int(((idx + 1) / total) * 85))
 
             try:
                 safe_name = self._safe_id(node.entry_id, idx)
@@ -356,13 +392,15 @@ class MeshRunner(QThread):
                 with open(geo_file, "w", encoding="utf-8") as f:
                     f.write(geo_content)
 
-                self.progress_updated.emit(pct + 3, f"Running GMSH on {node_label}...")
+                self._begin_stage(pct + 3, band_end,
+                                  f"Running GMSH on {node_label}...")
                 self.log_emitted.emit(f"  Generating mesh for {node_label} ...")
 
                 # 4. Launch gmsh.exe with the .geo script. Its output is
                 #    forwarded line by line while it runs, so only the verdict
                 #    is left to report here.
                 ok, _stdout, stop_reason = self._run_gmsh(geo_file)
+                self._end_stage()
 
                 if stop_reason:
                     self.log_emitted.emit(
@@ -399,7 +437,7 @@ class MeshRunner(QThread):
                 self.log_emitted.emit(f"  [ERROR] {node_label}: {e}")
                 continue
 
-            self.progress_updated.emit(pct + 5, f"Done: {node_label}")
+            self.progress_updated.emit(band_end, f"Done: {node_label}")
 
         # Summary
         success = len(mesh_paths) > 0
@@ -482,9 +520,10 @@ class MeshRunner(QThread):
         self.log_emitted.emit(
             f"  assembly job: {len(step_files)} solids, SizeMin={size_min:.4f}, "
             f"SizeMax={size_max:.4f}, CharLengthFactor={self._elem_factor}")
-        self.progress_updated.emit(18, "BooleanFragments + assembly meshing...")
+        self._begin_stage(18, 60, "BooleanFragments + assembly meshing...")
 
         ok, _stdout, stop_reason = self._run_gmsh(geo_file)
+        self._end_stage()
         if stop_reason:
             return False, {}, self._stop_message(stop_reason)
         if not ok or not os.path.exists(asm_vtk) or os.path.getsize(asm_vtk) == 0:
@@ -641,6 +680,80 @@ class MeshRunner(QThread):
 
     # ---------------------------------------------------------------
 
+    # ---- What the bar does while gmsh runs ----
+
+    def _begin_stage(self, floor: int, ceiling: int, message: str) -> None:
+        """Enter a stage the runner cannot report inside of, i.e. a gmsh run.
+
+        It writes the floor and the message itself, so the caller states the
+        span once: everything between floor and ceiling then comes from _creep,
+        and the caller writes the ceiling where the run actually ends.
+        """
+        self._stage_band = (floor, max(floor, ceiling))
+        self._stage_msg = message
+        self._stage_value = floor
+        self._gmsh_slice = _GMSH_1D_SLICE
+        self.progress_updated.emit(floor, message)
+
+    def _end_stage(self) -> None:
+        self._stage_band = None
+
+    def _creep(self, elapsed: float) -> None:
+        """Carry the bar on towards the end of the running stage.
+
+        gmsh reports its own mesh progress (_note_gmsh_line), but not
+        continuously: between two of its lines -- and through the merge and
+        fragment passes of an assembly job, which print no percent at all -- the
+        bar would hold the value it was handed, which is exactly what a wedged
+        process looks like. Elapsed time is the one number that does move while
+        it works, so it carries the bar across those silences, and
+        asymptotically: the clock never reaches the ceiling, which is still
+        written only where the stage really ends. A bar that is full keeps
+        meaning "the stage is over" and nothing less.
+        """
+        band = self._stage_band
+        if band is None:
+            return
+        floor, ceiling = band
+        if ceiling - floor < 2:
+            return
+        span = ceiling - floor - 1
+        value = floor + int(span * (elapsed / (elapsed + STAGE_CREEP_S)))
+        if value > self._stage_value:
+            self._stage_value = value
+            self.progress_updated.emit(value, self._stage_msg)
+
+    def _note_gmsh_line(self, line: str) -> None:
+        """Move the bar to where gmsh just said it is.
+
+        The run is the only stage we cannot report inside of ourselves, and gmsh
+        does report it: it announces each meshing stage and then prints how far
+        into it went, so the percent of the line is what the bar gets, placed in
+        the slice that stage owns inside the band. Value only ever grows, which
+        is what keeps the clock (_creep) and the real progress from fighting:
+        whichever is further along wins, and the creep -- whose curve lags
+        behind real progress most of the time -- stays quiet.
+        """
+        band = self._stage_band
+        if band is None:
+            return
+        stage = _GMSH_STAGE_RE.search(line)
+        if stage:
+            self._gmsh_slice = _GMSH_STAGE_SLICE.get(stage.group(1),
+                                                     _GMSH_MESH_SLICE)
+            return
+        percent = _GMSH_PERCENT_RE.search(line)
+        if percent is None:
+            return
+        floor, ceiling = band
+        span = max(ceiling - floor - 1, 0)
+        start, end = self._gmsh_slice
+        value = floor + int(
+            span * (start + (end - start) * int(percent.group(1)) / 100.0))
+        if value > self._stage_value:
+            self._stage_value = value
+            self.progress_updated.emit(value, self._stage_msg)
+
     def _run_gmsh(self, geo_file: str):
         """Run gmsh.exe, return (ok, stdout_text, stop_reason).
 
@@ -684,6 +797,10 @@ class MeshRunner(QThread):
             if beat != last_beat:
                 last_beat = beat
                 self.heartbeat.emit(float(beat[0]), float(beat[1]))
+                # Same clock, second job: the dialog needs the two numbers to
+                # tell "slow" from "wedged", the bar needs them because
+                # otherwise it does not move at all for the length of the run.
+                self._creep(beat[0])
 
             if self._cancelled:
                 proc.kill()
@@ -712,6 +829,9 @@ class MeshRunner(QThread):
             if line:
                 lines.append(line)
                 self.log_emitted.emit(f"  [GMSH] {line}")
+                # The bar has a use for the same line the log gets: gmsh is
+                # the only one who knows how far into the mesh it is.
+                self._note_gmsh_line(line)
                 found = True
         return found
 

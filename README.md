@@ -88,8 +88,11 @@ See the detailed installation guide at **[doc/installation.md](doc/installation.
   mesh/
     gmsh_dialog.py          — Mesh parameter configuration dialog
     mesh_runner.py          — GMSH background thread (QProcess + .geo scripts)
-    mesh_progress.py        — Non-blocking mesh progress dialog
     mesh_viewer.py          — VTK-based 3D mesh viewer (non-modal)
+    scope.py                — Contact-graph grouping (the re-mesh units)
+    remesh_scope_dialog.py  — Scope panel: groups, parameters, run progress
+    assembly_analysis.py    — Background contact analysis of the import
+    conformity.py           — Conformity verdict shared by mesh and export
   outputfile/               — Generated output files (VTK, MSH, GDML)
   ui/
     toolbar.py              — Office-style ribbon toolbar

@@ -37,12 +37,11 @@ from mesh.gmsh_dialog import DEFAULT_PARAMS, MeshParamsWidget
 from mesh.remesh_scope_dialog import MeshScopeDialog, resolved_mode
 from mesh.scope import MeshGroup, build_groups, group_key, part_param_rows
 from mesh.mesh_runner import MeshRunner
-from mesh.mesh_progress import MeshProgressDialog
 from mesh.mesh_viewer import MeshViewer
 from mesh.assembly_analysis import AssemblyAnalyzer
 from core.conformity import (
     AnalysisResult, MeshOutcome, CONFORMAL, NON_CONFORMAL, PARTIAL, UNKNOWN,
-    text as state_text,
+    state_color_for, text as state_text,
 )
 from ui.export_gdml_dialog import ExportGdmlDialog
 from ui.mesh_group_dialog import MeshGroupDialog
@@ -81,7 +80,9 @@ class MainWindow(QMainWindow):
 
         # Mesh state
         self._mesh_runner: Optional[MeshRunner] = None
-        self._mesh_progress_dlg: Optional[MeshProgressDialog] = None
+        # Whether the running session was stopped by the user. A cancelled
+        # session is not a finished one, and the status bar cell says so.
+        self._mesh_cancelled = False
         self._meshed_nodes: dict = {}  # entry_id -> vtk_path
         # Contact analysis: starts in the background right after import; its
         # result decides the meshing mode
@@ -189,6 +190,7 @@ class MainWindow(QMainWindow):
             sc_bg = "#181825"; sc_h = "#45475a"; sc_hh = "#585b70"
             log_bg = "#11111b"; log_fg = "#a6adc8"
             st_bg = "#181825"; st_fg = "#a6adc8"
+            pb_bg = "#313244"; pb_chunk = "#89b4fa"
         else:
             palette = QPalette()
             palette.setColor(QPalette.ColorRole.Window, QColor("#f5f5f5"))
@@ -211,6 +213,7 @@ class MainWindow(QMainWindow):
             sc_bg = "#f0f0f0"; sc_h = "#c0c0c0"; sc_hh = "#a0a0a0"
             log_bg = "#fafafa"; log_fg = "#555555"
             st_bg = "#e8e8e8"; st_fg = "#555555"
+            pb_bg = "#ffffff"; pb_chunk = "#0078d4"
 
         self.setStyleSheet(f"""
             QMainWindow {{ background-color: {mw_bg}; }}
@@ -245,10 +248,28 @@ class MainWindow(QMainWindow):
         # declaration, so left and right always agree -- and because both the
         # background and this foreground come from the theme, the cells simply
         # invert when the theme is switched.
+        # The contact bar carries one state more than the full/empty pair: an
+        # analysis that ended without an answer. It checked nothing, so it may
+        # not wear the full bar, and it is not a wait still on either, so the
+        # empty groove on its own is not enough -- it takes the red of the
+        # NON_CONFORMAL state. A dynamic property rather than an instance
+        # stylesheet, because this red is a theme colour like the two above: it
+        # has to be resolved again when the theme is switched, and this is the
+        # one place that knows which theme is on. _set_status_progress owns the
+        # property of the same name.
+        err = state_color_for(NON_CONFORMAL, dark)
         self._status_bar.setStyleSheet(f"""
             QStatusBar {{ background-color: {st_bg}; color: {st_fg};
                 font-size: 12px; padding: 2px 8px; }}
             QStatusBar QLabel {{ color: {st_fg}; font-size: 12px; }}
+            QStatusBar QProgressBar {{ background-color: {pb_bg};
+                border: 1px solid {st_fg}; border-radius: 3px; }}
+            QStatusBar QProgressBar::chunk {{ background-color: {pb_chunk};
+                border-radius: 2px; }}
+            QStatusBar QProgressBar[failed="true"] {{ background-color: {err};
+                border: 1px solid {err}; border-radius: 3px; }}
+            QStatusBar QProgressBar[failed="true"]::chunk
+                {{ background-color: {err}; border-radius: 2px; }}
         """)
 
         # Sync all sub-widgets' theme state
@@ -335,10 +356,11 @@ class MainWindow(QMainWindow):
         self._status_bar = self.statusBar()
         self._status_bar.showMessage("Ready")
 
-        # Two permanent cells on the right: conformity state + contact analysis
-        # progress. The contact analysis is the only basis for choosing a meshing
-        # mode, so it must be visible right after import; otherwise the user has
-        # to pick blindly when pressing Mesh (see doc/assembly_fragment_ui.md §9.6).
+        # Three permanent cells on the right: conformity state, contact analysis
+        # progress and meshing progress. The contact analysis is the only basis
+        # for choosing a meshing mode, so it must be visible right after import;
+        # otherwise the user has to pick blindly when pressing Mesh
+        # (see doc/assembly_fragment_ui.md §9.6).
         #
         # Typography: plain text, no colour of their own. Two things were wrong
         # before. (1) Rich text plus a 🟢/🔴 emoji made Qt pull in a second font
@@ -354,17 +376,41 @@ class MainWindow(QMainWindow):
         self._conformity_label.setMinimumWidth(240)
         self._analysis_label = QLabel()
         self._analysis_label.setMinimumWidth(200)
-        for lb in (self._conformity_label, self._analysis_label):
+        # The bar of the contact analysis, and of nothing else, placed right
+        # after the cell that names that analysis: it is the same statement
+        # drawn instead of spelled out. It is resident, like the cells beside
+        # it, and that is the point: shown and hidden it dragged those cells
+        # left and right every time an analysis started and landed. A landed
+        # analysis leaves it full and the next run starts it over
+        # (_set_status_progress), so at rest the cell reads "checked, 100%".
+        # A meshing session has a bar of its own in its own window, and its
+        # cell here carries the percentage in words.
+        self._contact_progress_bar = QProgressBar()
+        self._contact_progress_bar.setFixedWidth(90)
+        self._contact_progress_bar.setFixedHeight(10)
+        self._contact_progress_bar.setTextVisible(False)
+        self._contact_progress_bar.setValue(0)
+        # Third cell: the meshing progress of the running session. The progress
+        # window is a window the user has usually pushed aside to look at the
+        # model, and the cell beside it only speaks about the import, so this is
+        # the one place that says how far the meshing itself has got.
+        self._mesh_progress_label = QLabel()
+        self._mesh_progress_label.setMinimumWidth(150)
+        for lb in (self._conformity_label, self._analysis_label,
+                   self._mesh_progress_label):
             lb.setContentsMargins(8, 0, 8, 0)
             lb.setAlignment(Qt.AlignmentFlag.AlignLeft |
                             Qt.AlignmentFlag.AlignVCenter)
         self._status_bar.addPermanentWidget(self._conformity_label)
         self._status_bar.addPermanentWidget(self._analysis_label)
+        self._status_bar.addPermanentWidget(self._contact_progress_bar)
+        self._status_bar.addPermanentWidget(self._mesh_progress_label)
 
         self._set_conformity(UNKNOWN)
         self._set_analysis_text("Contact: waiting for import")
+        self._set_mesh_status()
 
-    # ---- Single update entry point for the two status bar cells ----
+    # ---- Single update entry point for the status bar cells ----
     #
     # Text only; the colour is the status bar's own foreground, so it follows
     # the theme on its own. The state itself is carried by the words.
@@ -380,6 +426,71 @@ class MainWindow(QMainWindow):
         if detail:
             txt += f" · {detail}"
         self._conformity_label.setText(txt)
+
+    def _set_status_progress(self, value: Optional[int], failed: bool = False):
+        """The single entry point for the contact bar of the status bar.
+
+        One bar, one owner: this is the contact analysis that runs right after
+        import and on demand from the scope panel, and no other wait in the
+        application is allowed to write here. The bar answers "how far is the
+        thing I am waiting on", which is a question it can only be asked about
+        one thing at a time.
+
+        None is what a landed analysis writes, and it leaves the bar full: the
+        bar then answers "is this model checked" at a glance, while the empty
+        groove of a bar taken back down says a wait is still on. The cell beside
+        it names the verdict in words, and the next run resets the bar by
+        writing its own numbers.
+
+        failed is the third state and the reason the value is not enough on its
+        own: an analysis that ended without an answer is empty like a fresh run
+        and must not be read as one, so the groove takes the red declared for
+        [failed="true"] in _apply_global_theme. Value and tint are written
+        together, so the next run clears the override by writing numbers of its
+        own.
+        """
+        if not hasattr(self, "_contact_progress_bar"):
+            return
+        bar = self._contact_progress_bar
+        bar.setValue(100 if value is None else max(0, min(100, int(value))))
+        # Re-polished only on a change of state: _on_analysis_progress writes
+        # here many times a second, and a re-polish per tick would cost more
+        # than it can ever show.
+        if bool(bar.property("failed")) != failed:
+            bar.setProperty("failed", failed)
+            bar.style().unpolish(bar)
+            bar.style().polish(bar)
+
+    def _set_mesh_status(self, text: str = ""):
+        """The single entry point for the meshing cell of the status bar.
+
+        The cell is permanent, never hidden: it sits empty and dashed between
+        runs. A cell that only exists while a session runs cannot do its job --
+        the user has no way of telling "no progress yet" from "no such thing",
+        and on a mesh that takes a few seconds it is gone again before it has
+        been noticed.
+
+        The percentage is part of the text and not of a bar: the bar of the
+        status bar belongs to the contact analysis.
+        """
+        if not hasattr(self, "_mesh_progress_label"):
+            return
+        self._mesh_progress_label.setText(text or "Fragment: idle")
+
+    def _mesh_session_progress(self, value: int) -> tuple:
+        """Where the session as a whole stands, given the running job's percent.
+
+        A session is one job per group, so the job's own number is not the
+        answer the user is after: (which group, of how many) and the overall
+        percentage are what the cell reports.
+        """
+        done = len(self._mesh_job_elapsed)
+        total = max(done + len(self._mesh_jobs) + 1, 1)
+        overall = int((done + value / 100.0) / total * 100)
+        # Capped at 99: 100% is only ever written once the whole session is
+        # over (_finish_mesh_session), so the number on its own says whether
+        # there is still something running.
+        return done + 1, total, max(0, min(99, overall))
 
     # ---- Contact analysis (runs automatically after import) ----
 
@@ -401,6 +512,10 @@ class MainWindow(QMainWindow):
         solids = self._geo_agent.get_all_solid_nodes()
         if not solids:
             self._set_analysis_text("Contact: no geometry")
+            # Nothing to analyse, so no answer lands either: the bar of the
+            # model that was on screen before this one goes with it, because
+            # the full bar means "checked" and this model has not been.
+            self._set_status_progress(0)
             return
 
         self._analysis_runner = AssemblyAnalyzer(
@@ -411,24 +526,68 @@ class MainWindow(QMainWindow):
         self._analysis_runner.log.connect(self._on_analysis_log)
         self._analysis_runner.finished_analysis.connect(self._on_analysis_done)
         self._set_analysis_text("Contact: running... 0%")
+        self._set_status_progress(0)
         self._analysis_runner.start()
+        self._push_contact_state()
 
     def _on_analysis_progress(self, value: int, message: str):
         self._set_analysis_text(f"Contact: {message} {value}%")
+        # The bar goes with the text: the analysis is the long wait before the
+        # first mesh, so it is what the bar is showing while it runs.
+        self._set_status_progress(value)
+        # The same number into the scope panel's own bar while one is open: the
+        # re-check is pressed there, so that is the window the wait has to report
+        # in (MeshScopeDialog.set_contact_progress). Two bars, one wait -- this
+        # status bar cell is the reading that survives with the panel closed.
+        panel = self._mesh_panel()
+        if panel is not None:
+            panel.set_contact_progress(value, message)
 
     def _on_analysis_log(self, line: str):
         self._logger.log_system(line)
 
     def _on_analysis_done(self, res: AnalysisResult):
         self._analysis = res
-        if res is None or res.failed:
-            reason = res.reason if res is not None else "no result"
-            self._set_analysis_text(f"Contact: incomplete ({reason})")
-        else:
+        ok = res is not None and not res.failed
+        # The bar is settled by the wait it was opened for: full once an answer
+        # has landed, empty and red when the run ended without one, because
+        # "checked" is exactly what a failed run is not. A run that a newer one
+        # has superseded is not allowed to write here at all -- the bar belongs
+        # to the newer run now, and settling it here would report an answer that
+        # has not been given.
+        if self.sender() is self._analysis_runner:
+            self._set_status_progress(None if ok else 0, failed=not ok)
+        if ok:
             self._set_analysis_text(f"Contact: done ({res.elapsed:.1f} s)")
             self._logger.log_system(
                 f"Mesh mode suggestion: {res.mode_label} -- {res.reason}")
+        else:
+            reason = res.reason if res is not None else "no result"
+            self._set_analysis_text(f"Contact: incomplete ({reason})")
+        self._push_contact_state()
         self._fill_open_scope_panel()
+
+    def _push_contact_state(self):
+        """Tell the open panel where the contact analysis stands.
+
+        The panel can be open before the analysis lands, and while it has no
+        answer every solid is a unit of its own -- which the panel has to be
+        able to tell apart from a model the analysis has cleared (see
+        MeshScopeDialog.set_contact_state). Driven from the three moments the
+        state changes: the analysis starts, it ends, and a panel opens onto
+        whatever it happens to be doing.
+        """
+        dlg = self._open_mesh_dialog
+        if dlg is None:
+            return
+        res = self._analysis
+        if res is not None and not res.failed:
+            dlg.set_contact_state("done")
+        elif res is not None:
+            dlg.set_contact_state("failed", res.reason)
+        elif self._analysis_runner is not None \
+                and self._analysis_runner.isRunning():
+            dlg.set_contact_state("running")
 
     def _fill_open_scope_panel(self):
         """Hand a late contact analysis to a scope panel that is already open.
@@ -438,6 +597,12 @@ class MainWindow(QMainWindow):
         built without it is a list of lonely solids for a model that is one
         assembly, so it is regrouped in place -- the ticks follow the solids
         they were on, so nothing the user set is lost.
+
+        A panel whose rows have already been planned once is the exception. The
+        rows are what that run's progress and report were about, so they are not
+        rebuilt: the panel holds the answer and offers it back to the user in
+        its notice line (set_components). Nothing is logged here in that case --
+        the user writes that line by taking the offer.
         """
         dlg = self._open_mesh_dialog
         res = self._analysis
@@ -445,9 +610,13 @@ class MainWindow(QMainWindow):
             return
         if dlg.set_components(
                 self._current_mesh_groups(self._geo_agent.get_all_solid_nodes())):
-            self._logger.log_system(
-                "Scope panel regrouped from the contact analysis: the coupled "
-                "parts are listed as one assembly group now.")
+            self._log_scope_regrouped()
+
+    def _log_scope_regrouped(self):
+        """One regrouping, one line -- the automatic one and the offered one."""
+        self._logger.log_system(
+            "Scope panel regrouped from the contact analysis: the coupled "
+            "parts are listed as one assembly group now.")
 
     def _connect_signals(self):
         self._toolbar.import_step_clicked.connect(self._slot_import_step)
@@ -653,13 +822,11 @@ class MainWindow(QMainWindow):
         # where the run directories may go in bulk: keeping them would offer to
         # roll back to a model that is no longer loaded.
         self._forget_mesh_runs()
-        # The run history in the panel describes nothing that is on screen any
-        # more -- this is the one reset() that does clear the log (see
-        # MeshProgressDialog.reset).
-        if self._mesh_progress_dlg is not None:
-            self._mesh_progress_dlg.reset(clear_log=True)
         self._toolbar.set_mesh_state("mesh")
         self._set_conformity(UNKNOWN)
+        # A new model has no run of its own, so the cell goes back to idle here
+        # (the one place that may empty a cell a finished run left full).
+        self._set_mesh_status()
 
     def _slot_delete_geometry(self, entry_id: str):
         """Delete an imported geometry file node and all its children."""
@@ -1035,10 +1202,12 @@ class MainWindow(QMainWindow):
             # The panel is being built without the contact analysis, so every
             # solid is listed on its own whether or not it touches a neighbour.
             # It is filled in as soon as the analysis lands (see
-            # _fill_open_scope_panel).
+            # _fill_open_scope_panel) -- unless a run is planned from these
+            # rows first, in which case the answer is offered instead.
             self._logger.log_system(
                 "Contact analysis still running: the scope starts per-solid "
-                "and is regrouped when the analysis lands.",
+                "and is regrouped when the analysis lands (or offered back "
+                "once a run has used these rows).",
                 level=LogLevel.WARNING)
         elif self._analysis.failed:
             self._logger.log_system(
@@ -1052,7 +1221,6 @@ class MainWindow(QMainWindow):
             initial_params=self._last_mesh_params,
             dark=self._dark_theme,
             first_run=first_run,
-            last_run=self._last_mesh_run,
             meshed_params=self._meshed_params,
             parent=self,
         )
@@ -1060,19 +1228,40 @@ class MainWindow(QMainWindow):
         # their own, so the row itself can stay "name + count + kind".
         dlg.group_activated.connect(self._open_mesh_group_window)
         # Shown, not exec()'d: the panel is non-modal, so the group windows it
-        # opens stay usable while it is up. The answer arrives through the
-        # dialog's own signals instead of as exec()'s return value.
-        dlg.accepted.connect(lambda d=dlg: self._on_mesh_scope_accepted(d))
+        # opens stay usable while it is up -- and so is the run it starts, which
+        # is reported back into it (it is the progress window now).
+        dlg.mesh_requested.connect(lambda d=dlg: self._on_mesh_scope_accepted(d))
+        # The grouping the rows show is one background job's answer, and this is
+        # the second opinion -- the same run the import starts, on demand.
+        dlg.recheck_contacts_requested.connect(self._start_assembly_analysis)
+        # The panel applies that answer itself when the user takes the offer in
+        # its notice line; the line it leaves in the log is the host's business.
+        dlg.regroup_accepted.connect(self._log_scope_regrouped)
+        dlg.view_mesh_requested.connect(self._slot_view_mesh)
+        dlg.rollback_requested.connect(self._rollback_mesh)
         dlg.rejected.connect(self._on_mesh_scope_rejected)
         dlg.finished.connect(lambda _r, d=dlg: self._release_mesh_dialog(d))
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._open_mesh_dialog = dlg
+        dlg.set_view_mesh_available(bool(self._meshed_nodes))
+        # Which of the two meanings of "every solid is its own unit" the rows
+        # have: the analysis cleared them, or it has not answered yet.
+        self._push_contact_state()
         dlg.show()
 
     def _release_mesh_dialog(self, dlg):
         """Forget the panel once it is closed, so the next Mesh press opens one."""
         if self._open_mesh_dialog is dlg:
             self._open_mesh_dialog = None
+
+    def _mesh_panel(self):
+        """The open scope panel, or None.
+
+        It is the progress window now, so every report from a running session
+        goes through here -- and the user may close it mid-run, in which case the
+        status bar cell and the toolbar carry the session alone.
+        """
+        return self._open_mesh_dialog
 
     def _current_mesh_groups(self, solid_nodes) -> list:
         """The re-mesh units of the model as it is now, in tree order.
@@ -1093,7 +1282,16 @@ class MainWindow(QMainWindow):
         )
 
     def _on_mesh_scope_rejected(self):
-        self._logger.log_system("Meshing cancelled by user.")
+        """The panel was closed.
+
+        Closing it is not cancelling: the panel is the progress window, so a
+        session started from it runs on without its window (the toolbar's Cancel
+        stops it). Said out loud, so a closed panel is not read as a dead run.
+        """
+        self._logger.log_system(
+            "Mesh scope closed." if self._mesh_current_group is None else
+            "Mesh scope closed: the run continues, Cancel in the toolbar stops "
+            "it.")
 
     def _discard_mesh_scope_panel(self):
         """Close the panel when the model changes under it.
@@ -1113,11 +1311,10 @@ class MainWindow(QMainWindow):
             group_dlg.close()
 
     def _on_mesh_scope_accepted(self, dlg):
-        """The panel's OK: run one session, one job per selected group.
+        """The panel's Mesh button: run one session, one job per selected group.
 
-        Everything that used to follow `exec()` lives here, unchanged: the panel
-        hands over a finished decision, and the session it starts is the same
-        whether the window that produced it was modal or not.
+        The panel is not closed by it -- it stays up as the progress window, and
+        is told what the run produced when the run ends (see _finish_mesh_session).
         """
         jobs = dlg.plan()
         if not jobs:
@@ -1165,16 +1362,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Create non-blocking progress dialog
-        if self._mesh_progress_dlg is None:
-            self._mesh_progress_dlg = MeshProgressDialog(self)
-        else:
-            self._mesh_progress_dlg.reset()
-
-        self._mesh_progress_dlg.set_view_mesh_callback(self._slot_view_mesh)
-        self._mesh_progress_dlg.set_cancel_callback(self._on_mesh_cancel)
-        self._mesh_progress_dlg.show()
-
         # ---- Open the session: one job per group, run back to back ----
         self._mesh_jobs = list(jobs)
         self._mesh_session_meshed = {}
@@ -1198,6 +1385,7 @@ class MainWindow(QMainWindow):
         self._mesh_job_elapsed = {}
         self._mesh_session_outcomes = []
         self._mesh_session_failed = 0
+        self._mesh_cancelled = False
         self._mesh_outcome = None
         self._mesh_run_no += 1
         # This run's own directory. Nothing outside it is written, so the
@@ -1207,18 +1395,15 @@ class MainWindow(QMainWindow):
                                           f"run_{self._mesh_run_no:03d}")
         os.makedirs(self._mesh_run_dir, exist_ok=True)
 
-        prev = self._last_mesh_run if self._last_mesh_run else None
-        self._mesh_progress_dlg.begin_run(
-            self._mesh_run_no,
-            dict(self._last_mesh_params, kind=None),
-            dict(prev, kind=state_text(prev["kind"])) if prev else None,
-            self._mesh_scope_text)
+        dlg.start_run(self._mesh_run_no, self._mesh_scope_text)
 
         # While a session is in flight the toolbar offers Cancel, and only
         # Cancel: starting a second session on top of the first would make the
         # two write into the same work directory.
         self._toolbar.set_running(True)
         self._toolbar.set_mesh_state("cancel")
+        n_jobs = len(self._mesh_jobs)
+        self._set_mesh_status(f"Fragment 1/{n_jobs} · 0%")
         self._start_next_mesh_job()
 
     def _start_next_mesh_job(self):
@@ -1241,12 +1426,16 @@ class MainWindow(QMainWindow):
         self._logger.log_system(
             f"Meshing {group.label}: {group.n_parts} part(s) in "
             f"{resolved_mode(group, params)} mode…")
+        # The bar keeps the session's percentage while the line names the job: a
+        # job is not a run, and dropping the bar back to zero for each group
+        # would read as three runs in a row.
         done = len(self._mesh_job_elapsed)
         total = done + len(self._mesh_jobs) + 1
-        if self._mesh_progress_dlg:
-            self._mesh_progress_dlg.append_log(
-                f"[{done + 1}/{total}] {group.label} · {group.n_parts} part(s)")
-            self._mesh_progress_dlg.set_progress(0, f"{group.label}: starting…")
+        panel = self._mesh_panel()
+        if panel is not None:
+            panel.set_progress(
+                int(done * 100 / total),
+                f"{group.label} ({done + 1}/{total}) · starting…")
 
         self._mesh_runner = MeshRunner(
             nodes=nodes,
@@ -1276,6 +1465,7 @@ class MainWindow(QMainWindow):
 
     def _on_mesh_cancel(self):
         """Cancel means the whole session: the jobs are one accepted decision."""
+        self._mesh_cancelled = True
         if self._mesh_jobs:
             self._logger.log_system(
                 f"{len(self._mesh_jobs)} pending group(s) dropped.",
@@ -1285,16 +1475,19 @@ class MainWindow(QMainWindow):
             self._mesh_runner.cancel()
             self._logger.log_system("Cancelling meshing…",
                                     level=LogLevel.WARNING)
-            if self._mesh_progress_dlg:
-                self._mesh_progress_dlg.append_log("[Cancel] terminating gmsh job...")
+            panel = self._mesh_panel()
+            if panel is not None:
+                panel.set_status("Cancelling… terminating the gmsh job.")
 
     def _on_mesh_stages(self, labels: list):
-        if self._mesh_progress_dlg:
-            self._mesh_progress_dlg.set_stages(labels)
+        panel = self._mesh_panel()
+        if panel is not None:
+            panel.set_stages(labels)
 
     def _on_mesh_stage_changed(self, index: int, message: str):
-        if self._mesh_progress_dlg:
-            self._mesh_progress_dlg.set_stage(index, message)
+        panel = self._mesh_panel()
+        if panel is not None:
+            panel.set_stage(index, message)
 
     def _slot_view_mesh(self):
         """Open a new mesh preview window each time (allows side-by-side
@@ -1409,25 +1602,36 @@ class MainWindow(QMainWindow):
     # ---- Mesh runner callbacks ----
 
     def _on_mesh_progress(self, value: int, message: str):
-        """Update progress dialog and status bar from mesh runner."""
-        if self._mesh_progress_dlg:
-            self._mesh_progress_dlg.set_progress(value, message)
-        self._status_bar.showMessage(f"Meshing: {message} ({value}%)")
+        """Update the panel and the status bar from the mesh runner.
+
+        The message itself goes to the panel and the log; the status bar cell
+        stays short -- group count and overall percentage -- because it has to
+        read at a glance from the far side of the screen. The panel gets the
+        session's percentage too, not the job's: it is watched, and 0..100 three
+        times over is not a progress bar.
+
+        The percentage is carried by the cell's own text: the bar next to it
+        belongs to the contact analysis, and this session is not that analysis.
+        """
+        idx, total, overall = self._mesh_session_progress(value)
+        panel = self._mesh_panel()
+        if panel is not None:
+            panel.set_progress(overall, message)
+        self._set_mesh_status(f"Fragment {idx}/{total} · {overall}%")
 
     def _on_mesh_log(self, line: str):
-        """Forward GMSH log line to both the system log and progress dialog."""
+        """Forward a gmsh log line to the system log, and nowhere else."""
         self._logger.log_system(line)
-        if self._mesh_progress_dlg:
-            self._mesh_progress_dlg.append_log(line.split("\n")[-1])
 
     def _on_mesh_heartbeat(self, elapsed: float, idle: float):
-        """Pass the runner's liveness on to the dialog.
+        """Pass the runner's liveness on to the panel.
 
         A single gmsh job freezes both the bar and the log, which is what a
         wedged process looks like too; elapsed and idle tell the two apart.
         """
-        if self._mesh_progress_dlg:
-            self._mesh_progress_dlg.set_heartbeat(elapsed, idle)
+        panel = self._mesh_panel()
+        if panel is not None:
+            panel.set_heartbeat(elapsed, idle)
 
     def _on_mesh_finished(self, success: bool, mesh_paths: dict, message: str):
         """One job is done: fold it in, then start the next one.
@@ -1490,9 +1694,6 @@ class MainWindow(QMainWindow):
             # The remaining groups are independent of this one, so a failure does
             # not abort the session: whatever did mesh stays usable, and the
             # export gate reports exactly which parts are still missing.
-            if self._mesh_progress_dlg:
-                self._mesh_progress_dlg.append_log(
-                    f"[{who}] failed — continuing with the remaining group(s)")
 
         # Publish what exists so far, so a long session can be previewed while it
         # is still running (the parts kept from earlier runs are in _mesh_kept).
@@ -1565,8 +1766,8 @@ class MainWindow(QMainWindow):
         self._mesh_outcome = outcome
 
         # Everything the panel needs to describe this run as the "Last run" row
-        # next time: the full parameter set as well, so the progress panel can
-        # diff the two runs without a second lookup.
+        # next time: the full parameter set as well, so the panel can diff the
+        # two runs without a second lookup.
         self._last_mesh_run = dict(self._last_mesh_params)
         self._last_mesh_run.update({
             "run_no": self._mesh_run_no,
@@ -1575,9 +1776,6 @@ class MainWindow(QMainWindow):
             "kind": outcome.kind,
             "kind_text": state_text(outcome.kind),
             "scope": self._mesh_scope_text,
-            # The progress panel's run header names "elem", so the full
-            # parameter set above is not enough on its own.
-            "elem": self._last_mesh_params.get("elem_factor"),
         })
 
         self._logger.log_system(
@@ -1590,11 +1788,36 @@ class MainWindow(QMainWindow):
             f"Conformity: {outcome.headline}"
             + (" (" + "; ".join(outcome.notes) + ")" if outcome.notes else ""))
 
-        if self._mesh_progress_dlg:
-            self._mesh_progress_dlg.set_run_title(self._mesh_run_no,
-                                                  failed=not success)
-            self._mesh_progress_dlg.set_outcome(outcome, success)
-            self._mesh_progress_dlg.set_regenerate_callback(self._slot_mesh)
+        # The session is over. The cell keeps the run on display rather than
+        # dropping back to an empty slot: a running session is capped at 99, so
+        # 100% is the one reading that can only mean "this is finished", and a
+        # user who looks at the status bar after a run has to be able to see that
+        # something happened -- an empty cell says the opposite. A cancelled
+        # session is the exception: it did not finish, so it has no reading to
+        # leave behind.
+        if self._mesh_cancelled:
+            self._set_mesh_status()
+        else:
+            n_jobs = len(self._mesh_session_outcomes) or 1
+            self._set_mesh_status(f"Fragment {n_jobs}/{n_jobs} · 100%")
+
+        panel = self._mesh_panel()
+        if panel is not None:
+            # The panel is where this run was started from and it is still open,
+            # so it has to be told twice over: where the run got to (the bar and
+            # its last line), and what it left behind (adopt_run -- the next
+            # press of Mesh plans the *next* run, and the changed-field markers
+            # compare against the values the model now holds).
+            panel.set_view_mesh_available(bool(self._meshed_nodes))
+            # The same reading the status bar cell was just given, including the
+            # cancelled case: one bar for one run, whichever of the two the user
+            # happens to be looking at.
+            panel.finish_run(
+                f"#{self._mesh_run_no} · {outcome.headline} · "
+                f"{outcome.n_meshed} solid(s) · {elapsed:.1f}s"
+                + (" · cancelled" if self._mesh_cancelled else ""),
+                not self._mesh_cancelled)
+            panel.adopt_run(self._meshed_params)
             self._offer_rollback(success)
 
         # Run directories that nothing points at any more go now that the
@@ -1619,22 +1842,22 @@ class MainWindow(QMainWindow):
         changed what is in use -- otherwise it would be a button that does
         nothing.
         """
-        dlg = self._mesh_progress_dlg
+        dlg = self._mesh_panel()
         if success or not self._mesh_prev_nodes or not self._mesh_prev_run_no:
             return
         if self._meshed_nodes == self._mesh_prev_nodes:
             # Every group either failed or was untouched, so #N is still exactly
             # what is in use: nothing to roll back to.
-            dlg.append_log(
+            self._logger.log_system(
                 f"  in use: the #{self._mesh_prev_run_no} mesh, unchanged "
                 f"({len(self._mesh_prev_nodes)} solid(s)) — preview and export "
                 f"are unaffected.")
             return
-        dlg.append_log(
+        self._logger.log_system(
             f"  in use: #{self._mesh_prev_run_no} for the failed group(s), "
             f"this run for the rest.")
-        dlg.set_rollback_callback(self._rollback_mesh)
-        dlg.show_rollback(self._mesh_prev_run_no)
+        if dlg is not None:
+            dlg.show_rollback(self._mesh_prev_run_no)
 
     def _rollback_mesh(self):
         """`Roll back to #N`: put the previous run's mesh back in use.
@@ -1656,10 +1879,8 @@ class MainWindow(QMainWindow):
             self._logger.log_system(
                 f"Roll back to #{run_no} failed: its mesh files are gone.",
                 level=LogLevel.ERROR)
-            if self._mesh_progress_dlg:
-                self._mesh_progress_dlg.append_log(
-                    f"✕ roll back to #{run_no} failed — mesh files missing")
-                self._mesh_progress_dlg.hide_rollback()
+            if self._mesh_panel() is not None:
+                self._mesh_panel().hide_rollback()
             return
 
         self._meshed_nodes = live
@@ -1691,11 +1912,14 @@ class MainWindow(QMainWindow):
         self._logger.log_system(
             f"Rolled back to run #{run_no}: {len(live)} solid(s) in use again.")
 
-        if self._mesh_progress_dlg:
-            self._mesh_progress_dlg.append_log(
-                f"↩ rolled back to #{run_no} · {len(live)} solid(s) in use")
-            self._mesh_progress_dlg.hide_rollback()
-            self._mesh_progress_dlg.set_view_mesh_available(True)
+        panel = self._mesh_panel()
+        if panel is not None:
+            # The panel outlives the run, so the rollback has to reach it too:
+            # the values it plans against are the previous run's again, and that
+            # is the mesh its View Mesh button should open.
+            panel.hide_rollback()
+            panel.set_view_mesh_available(True)
+            panel.adopt_run(self._meshed_params)
         self._toolbar.set_mesh_state("remesh" if live else "mesh")
 
     # ---- Mesh work area (versioned per run) ----

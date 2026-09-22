@@ -54,10 +54,6 @@ DEFAULT_PARAMS: Dict[str, Any] = {
     "mode": MODE_AUTO,
 }
 
-# Historical per-solid meshing rate, used only for the rough duration estimate.
-_PER_SOLID_SECONDS = 46.0
-
-
 def merge_defaults(params: Optional[dict] = None) -> Dict[str, Any]:
     """`params` on top of DEFAULT_PARAMS, so every key is always present."""
     merged = dict(DEFAULT_PARAMS)
@@ -69,35 +65,6 @@ def _fmt_duration(seconds: float) -> str:
     """242 -> '4 min 02 s', the same shape the progress dialog uses."""
     total = int(round(seconds))
     return f"{total // 60} min {total % 60:02d} s"
-
-
-def estimate_seconds(params: Dict[str, Any], n_solids: int,
-                     last_run: Optional[dict] = None) -> Optional[float]:
-    """Rough duration for `n_solids` solids meshed with `params`.
-
-    Scaled from the previous measurement when there is one -- the element count,
-    and with it the work, goes as element-factor^-3 -- otherwise from the
-    historical per-solid rate. Returns None when nothing is known, so the callers
-    can say "unknown" instead of inventing a number.
-
-    The scope panel calls this once per group and adds the results up: it meshes
-    a subset, so its estimate has to mean "re-do these n", not "start over", and
-    the groups no longer share an element factor.
-    """
-    if last_run and last_run.get("elapsed"):
-        try:
-            fe = float(params.get("elem_factor", 1.0)) / float(
-                last_run.get("elem_factor") or 1.0)
-            ratio = (1.0 / fe) ** 3 if fe > 0 else 1.0
-        except (TypeError, ValueError, ZeroDivisionError):
-            ratio = 1.0
-        n_prev = last_run.get("n_solids") or n_solids
-        if n_prev:
-            ratio *= n_solids / float(n_prev)
-        return float(last_run["elapsed"]) * ratio
-    if n_solids <= 0:
-        return None
-    return _PER_SOLID_SECONDS * n_solids
 
 
 def panel_palette(dark: bool = False) -> Dict[str, str]:
