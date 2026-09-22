@@ -33,7 +33,7 @@ import math
 from collections import defaultdict
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from OCC.Core.Bnd import Bnd_Box
+from OCC.Core.Bnd import Bnd_Box, Bnd_OBB
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCC.Core.BRepExtrema import BRepExtrema_DistShapeShape
@@ -78,6 +78,90 @@ def mesh_diagonal(pts: Sequence[Point]) -> float:
     ys = [p[1] for p in pts]
     zs = [p[2] for p in pts]
     return math.dist((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
+
+
+def _sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+# ──────────────────── oriented bounding boxes (contact pre-filter) ────────────────────
+#
+# An AABB (bbox_of above) is cheap but loose for tilted or slender parts: two
+# beams crossing at 45 degrees have overlapping AABBs while the solids never
+# come near each other, and every such pair still reaches the exact test.
+#
+# The OBB test below is still pure math and is *exact* on the question "do the
+# two boxes intersect", so it removes those pairs for free.
+#
+# It has to be a lower bound on the true distance, never an estimate: callers
+# use it as "distance > threshold => skip this pair", and any value that runs
+# high silently drops a real contact. A corner-to-corner distance is an upper
+# bound and must not be used for that.
+
+
+def obb_of(shape: TopoDS_Shape) -> Bnd_OBB:
+    """Oriented bounding box of a shape, aligned with its natural axes."""
+    obb = Bnd_OBB()
+    brepbndlib.AddOBB(shape, obb)
+    return obb
+
+
+def _obb_axis(box: Bnd_OBB, k: int) -> Point:
+    d = (box.XDirection(), box.YDirection(), box.ZDirection())[k]
+    return (d.X(), d.Y(), d.Z())
+
+
+def obb_distance_lower_bound(box_a: Bnd_OBB, box_b: Bnd_OBB) -> float:
+    """Lower bound on the distance between two OBBs, 0 when they intersect.
+
+    For any unit direction n and any p in A, q in B:
+
+        |q - p| >= (q - p).n >= |(cb - ca).n| - ra - rb
+
+    where ra/rb are the box extents along n. So the projection gap along a
+    single axis is already a lower bound, and so is the maximum over several.
+
+    The 15 separating-axis candidates (3 + 3 face normals, 9 edge cross
+    products) decide box intersection exactly, so a result of 0 really means
+    the boxes overlap -- not merely that the axes tried were inconclusive.
+    """
+    ca, cb = box_a.Center(), box_b.Center()
+    dc = (cb.X() - ca.X(), cb.Y() - ca.Y(), cb.Z() - ca.Z())
+
+    axes_a = [_obb_axis(box_a, k) for k in range(3)]
+    axes_b = [_obb_axis(box_b, k) for k in range(3)]
+    half_a = (box_a.XHSize(), box_a.YHSize(), box_a.ZHSize())
+    half_b = (box_b.XHSize(), box_b.YHSize(), box_b.ZHSize())
+
+    axes = axes_a + axes_b
+    for u in axes_a:
+        for v in axes_b:
+            n = _cross(u, v)
+            if _dot(n, n) > 1e-12:      # near-parallel edges give no axis
+                axes.append(n)
+
+    best = 0.0
+    for n in axes:
+        norm = math.sqrt(_dot(n, n))
+        if norm < 1e-12:
+            continue
+        n = (n[0] / norm, n[1] / norm, n[2] / norm)
+        ra = sum(abs(_dot(axes_a[k], n)) * half_a[k] for k in range(3))
+        rb = sum(abs(_dot(axes_b[k], n)) * half_b[k] for k in range(3))
+        gap = abs(_dot(dc, n)) - ra - rb
+        if gap > best:
+            best = gap
+    return best
 
 
 # ────────────────────────── VTK I/O ──────────────────────────
@@ -304,20 +388,6 @@ def build_parts(
 
 
 # ──────────────────── coincident facet detection ────────────────────
-
-
-def _sub(a, b):
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-
-def _cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0])
-
-
-def _dot(a, b):
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 def _inside(p, a, b, c, tol) -> bool:

@@ -12,7 +12,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QSplitter, QVBoxLayout,
     QWidget, QFileDialog, QMessageBox, QDockWidget, QToolBar,
-    QDialog, QProgressDialog, QLabel, QProgressBar
+    QDialog, QLabel, QProgressBar
 )
 from PyQt6.QtCore import Qt, QEventLoop, QTimer
 from PyQt6.QtGui import QPalette, QColor
@@ -31,6 +31,7 @@ from ui.toolbar import RibbonToolBar
 from ui.project_tree import ProjectTreeWidget, TREE_ITEM_TYPE
 from ui.occ_widget import WidgetOCC
 from ui.geo_param_widget import GeoParamWidget
+from ui.import_progress import ImportProgressDialog
 from utils.task_manager import TaskManager
 from utils.logger import AsyncLogger, LogLevel
 from mesh.gmsh_dialog import DEFAULT_PARAMS, MeshParamsWidget
@@ -88,6 +89,12 @@ class MainWindow(QMainWindow):
         # result decides the meshing mode
         self._analysis: Optional[AnalysisResult] = None
         self._analysis_runner: Optional[AssemblyAnalyzer] = None
+        # Whether the automatic contact check is switched off for this model
+        # (the box on the import dialog, left unticked). Only the automatic
+        # triggers honour it -- the import, a delete, a move -- so a model the
+        # user asked not to check is not then checked behind their back. The
+        # scope panel's Check contacts is an explicit ask and clears it.
+        self._contact_skipped = False
         # Verdict of the last meshing run, used to gate the export
         self._mesh_outcome: Optional[MeshOutcome] = None
         # The scope panel while it is open, so a late contact analysis can be
@@ -503,13 +510,31 @@ class MainWindow(QMainWindow):
 
     # ---- Contact analysis (runs automatically after import) ----
 
-    def _start_assembly_analysis(self):
+    def _on_recheck_contacts(self):
+        """The scope panel's Check contacts was pressed.
+
+        An explicit ask, so it runs even on a model whose automatic check was
+        turned off at import -- and clears the model's setting by doing so, so
+        the automatic triggers that follow (a delete, a move) stay honest about
+        an answer that is now there.
+        """
+        self._start_assembly_analysis(True)
+
+    def _start_assembly_analysis(self, check: Optional[bool] = None):
         """Run the contact analysis in the background as soon as import ends.
 
         It is the only basis for "assembly conformal or per-solid": when a
         contact face exists, assembly is mandatory, otherwise each side of that
         face would get its own facet set. Running it after import means the
         answer is already there when the user presses Mesh.
+
+        `check` is the answer to "is this wanted at all". None is an automatic
+        trigger -- the import, a delete, a move -- and the model's own setting
+        decides it (see _contact_skipped). True is the scope panel's Check
+        contacts, an explicit ask. False is the import box left unticked, and
+        that is a state of its own rather than a gap: the rows stay per-solid,
+        and "not checked" has to read as that and not as a verdict (see
+        _push_contact_state).
         """
         prev = self._analysis_runner
         if prev is not None and prev.isRunning():
@@ -517,7 +542,19 @@ class MainWindow(QMainWindow):
             # is nothing to wait for and the UI thread is never parked here.
             prev.cancel()
 
+        if check is None:
+            check = not self._contact_skipped
+        self._contact_skipped = not check
+
         self._analysis = None
+        if not check:
+            # The bar of the model that was on screen before this one goes with
+            # it: a full bar means "checked" and this model has not been.
+            self._set_analysis_text("Contact: skipped")
+            self._set_status_progress(0)
+            self._push_contact_state()
+            return
+
         solids = self._geo_agent.get_all_solid_nodes()
         if not solids:
             self._set_analysis_text("Contact: no geometry")
@@ -581,10 +618,11 @@ class MainWindow(QMainWindow):
 
         The panel can be open before the analysis lands, and while it has no
         answer every solid is a unit of its own -- which the panel has to be
-        able to tell apart from a model the analysis has cleared (see
-        MeshScopeDialog.set_contact_state). Driven from the three moments the
-        state changes: the analysis starts, it ends, and a panel opens onto
-        whatever it happens to be doing.
+        able to tell apart from a model the analysis has cleared, and from a
+        model nothing was ever asked to look at (see
+        MeshScopeDialog.set_contact_state). Driven from the four moments the
+        state changes: the analysis starts, it ends, it is skipped, and a panel
+        opens onto whatever it happens to be doing.
         """
         dlg = self._open_mesh_dialog
         if dlg is None:
@@ -594,6 +632,11 @@ class MainWindow(QMainWindow):
             dlg.set_contact_state("done")
         elif res is not None:
             dlg.set_contact_state("failed", res.reason)
+        elif self._contact_skipped:
+            # Not a wait and not a verdict either: nothing has looked at this
+            # model, and the per-solid rows below must not read as "nothing
+            # touches anything".
+            dlg.set_contact_state("skipped")
         elif self._analysis_runner is not None \
                 and self._analysis_runner.isRunning():
             dlg.set_contact_state("running")
@@ -674,14 +717,12 @@ class MainWindow(QMainWindow):
         t_import = time.time()
         self._logger.log_system(f"Importing: {', '.join(files)} ...")
 
-        from PyQt6.QtWidgets import QProgressDialog
-        progress = QProgressDialog("Reading CAD files...", "Cancel", 0, 100, self)
-        progress.setWindowTitle("Import CAD")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
         # Shown straight away and kept up for the whole read, then closed once
         # at the end: a window-modal box left open would block every input.
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
+        # The box it carries is the contact check: off is for a model whose
+        # read already told the user how big it is, since the check is a whole
+        # second pass over it (see _start_assembly_analysis).
+        progress = ImportProgressDialog(self)
         progress.show()
         QApplication.processEvents()
 
@@ -791,6 +832,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        # Read before the box goes away: this is the last moment it can still be
+        # changed, and nothing between here and the run below can change it.
+        check_contacts = progress.check_contacts()
         self._occ_widget.fit_all()
         progress.setValue(100)
         progress.close()
@@ -808,7 +852,7 @@ class MainWindow(QMainWindow):
 
         # Start the contact analysis in the background right away: it is the only
         # basis for "assembly conformal or per-solid"
-        self._start_assembly_analysis()
+        self._start_assembly_analysis(check_contacts)
 
     def _reset_model_state(self):
         """Drop everything that describes the geometry that was on screen.
@@ -1209,7 +1253,13 @@ class MainWindow(QMainWindow):
         # The scope panel: the groups and the parameters in one place, for a
         # first mesh and for a re-mesh alike (mesh/remesh_scope_dialog.py).
         groups = self._current_mesh_groups(solid_nodes)
-        if self._analysis is None:
+        if self._contact_skipped:
+            # Not a wait: nothing is coming, so the panel has to say who turns
+            # it on (its own Check contacts) rather than promise a regroup.
+            self._logger.log_system(
+                "Contact check skipped at import: every part is listed on its "
+                "own. Check contacts in this panel to regroup them.")
+        elif self._analysis is None:
             # The panel is being built without the contact analysis, so every
             # solid is listed on its own whether or not it touches a neighbour.
             # It is filled in as soon as the analysis lands (see
@@ -1245,7 +1295,7 @@ class MainWindow(QMainWindow):
         dlg.mesh_requested.connect(lambda d=dlg: self._on_mesh_scope_accepted(d))
         # The grouping the rows show is one background job's answer, and this is
         # the second opinion -- the same run the import starts, on demand.
-        dlg.recheck_contacts_requested.connect(self._start_assembly_analysis)
+        dlg.recheck_contacts_requested.connect(self._on_recheck_contacts)
         # The panel applies that answer itself when the user takes the offer in
         # its notice line; the line it leaves in the log is the host's business.
         dlg.regroup_accepted.connect(self._log_scope_regrouped)

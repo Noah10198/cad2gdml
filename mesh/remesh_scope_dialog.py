@@ -60,7 +60,7 @@ Why the progress bar is here too: this is the window a run is started from and
 the window the user is looking at while it runs, so it is where the run reports
 -- one bar under the parameters, and two rows under the bar that hold their
 height whatever the bar is reading. The same goes for
-the other wait this panel starts: Re-check contacts reports on that bar too, one
+the other wait this panel starts: Check contacts reports on that bar too, one
 wait at a time, so the window a button is in is the window its wait is in
 (_bar_owner). The separate progress dialog it replaces carried a second log (the
 main window already has one), a Cancel (the toolbar turns into Cancel for the
@@ -588,7 +588,8 @@ class MeshScopeDialog(QDialog):
         self.regroup_accepted.emit()
 
     def set_contact_state(self, state: str, detail: str = ""):
-        """What the contact analysis is doing: "running", "failed" or "done".
+        """What the contact analysis is doing: "running", "skipped", "failed"
+        or "done".
 
         The host owns the analysis, so it is the host that says what it is up
         to -- the panel never asks a runner anything, the same rule its progress
@@ -710,6 +711,16 @@ class MeshScopeDialog(QDialog):
                     f"Contact analysis incomplete ({self._contact_detail}): "
                     "every solid is listed on its own.")
             colour = p["changed_border"]
+        elif state == "skipped":
+            # The import box left unticked, so nobody has looked at this model:
+            # the rows are per-solid because no check was asked for, and not
+            # because nothing touches. The button beside it is the ask, so the
+            # line names it rather than promising a regroup that is not coming.
+            text = ("Contact check skipped: every solid is listed on its own. "
+                    "Check contacts runs it now." if not self._rows_committed
+                    else "Contact check skipped: the rows stay on the units "
+                    "meshed here.")
+            colour = p["title"]
         elif self._late_components:
             # The answer disagrees with the rows and the rows are a run's, so
             # it waits here for the button beside it rather than rewriting them.
@@ -971,7 +982,7 @@ class MeshScopeDialog(QDialog):
         """The buttons, as one strip: the model's on the left, the pair right.
 
         The left end holds what a run that just ended here leaves to do -- look
-        at the mesh it produced, or undo it -- beside Re-check contacts, which
+        at the mesh it produced, or undo it -- beside Check contacts, which
         is about the model rather than a run. The old window put "view result"
         and "regenerate" in a footer of its own, which meant the one thing the
         user wants next was on a window the user had to keep open.
@@ -1000,14 +1011,16 @@ class MeshScopeDialog(QDialog):
         f.addWidget(self._view_btn)
         # The rows are one answer to "which parts belong together", and it is
         # the answer of a background job that ran on the model as it was then.
-        # The button is the second opinion: run it again, and the rows are
-        # rebuilt from what it finds (set_components).
+        # The button is the second opinion -- and the first, on a model whose
+        # check was skipped at import. What it always is, is an explicit ask,
+        # and the rows are rebuilt from what it finds (set_components).
         # Blue in every state too, grey only while it cannot run: it is about the
         # model rather than the next run, and a white button beside a blue one
         # reads as the lesser action, which this is not.
-        self._recheck_btn = self._primary("Re-check contacts")
+        self._recheck_btn = self._primary("Check contacts")
         self._recheck_btn.setToolTip(
-            "Run the contact analysis again and regroup the units")
+            "Look for touching solids and regroup the units; a check already "
+            "there is replaced")
         self._recheck_btn.clicked.connect(self._on_recheck_pressed)
         f.addWidget(self._recheck_btn)
 
@@ -1629,7 +1642,7 @@ class MeshScopeDialog(QDialog):
         how the 3D view is aimed: ticking three solids to look at the three of
         them is the same selection a run would work on, and taking the button
         away whenever some *other* ticked unit has work left would make the
-        subset unviewable exactly when it is being worked on. Re-check contacts
+        subset unviewable exactly when it is being worked on. Check contacts
         stands beside them in every state: it is about the model, not about a
         run, and it is the one thing to reach for when the grouping itself is in
         doubt.
@@ -1819,7 +1832,7 @@ class MeshScopeDialog(QDialog):
 
         The one bar moves to whichever wait owns it (_bar_owner), and every
         writer hands it a value instead of setting it: a session owns it from
-        the press of Mesh, a re-check from the press of Re-check contacts, and
+        the press of Mesh, a re-check from the press of Check contacts, and
         each keeps its own percentage and its own line, so neither can leave the
         other's number or step on screen. The analysis the host runs by itself
         owns nothing here -- it is not a wait this panel started -- so a panel

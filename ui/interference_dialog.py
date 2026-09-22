@@ -17,6 +17,7 @@ Performance optimisation:
 
 from typing import Optional, List, Tuple
 import csv
+import os
 import time
 import math
 
@@ -41,9 +42,9 @@ from OCC.Core.Quantity import (
 
 # OCC bounding box (oriented)
 from OCC.Core.Bnd import Bnd_OBB
-from OCC.Core.BRepBndLib import brepbndlib
 
 from ui.occ_preview import OCCPreview
+from mesh.vtk_tools import obb_of, obb_distance_lower_bound
 
 
 # ── Constants ─────────────────────────────────────────────────────────
@@ -187,9 +188,7 @@ class InterferenceDialog(QDialog):
         tighter fit than AABB for tilted / slender parts (beams, pipes).
         This reduces false positives in the pre-filter.
         """
-        obb = Bnd_OBB()
-        brepbndlib.AddOBB(shape, obb)
-        return obb
+        return obb_of(shape)
 
     @staticmethod
     def _obb_corners(obb: Bnd_OBB):
@@ -208,27 +207,17 @@ class InterferenceDialog(QDialog):
 
     @staticmethod
     def _bbox_distance_sq(box_a: Bnd_OBB, box_b: Bnd_OBB) -> float:
-        """Squared minimum distance between two OBBs (0 if they overlap).
+        """Squared *lower bound* on the distance between two OBBs (0 if they
+        intersect).
 
-        Uses IsOut() for the overlap test (fast), and falls back to
-        minimum vertex-to-vertex distance for separated boxes.
+        Callers use this as "> CONTACT_THRESHOLD means safe, skip the exact
+        test", so it must never overestimate. A corner-to-corner distance is
+        an upper bound: it can read far while the boxes are actually touching,
+        which silently drops real contacts. obb_distance_lower_bound is exact
+        on the intersection question and a true lower bound otherwise.
         """
-        if not box_a.IsOut(box_b):
-            return 0.0  # boxes overlap
-
-        # Minimum vertex-vertex distance (conservative, but sufficient
-        # for a pre-filter — overestimates slightly at worst).
-        corners_a = InterferenceDialog._obb_corners(box_a)
-        corners_b = InterferenceDialog._obb_corners(box_b)
-        min_d2 = float('inf')
-        for ca in corners_a:
-            for cb in corners_b:
-                d2 = (ca.X() - cb.X())**2 + (ca.Y() - cb.Y())**2 + (ca.Z() - cb.Z())**2
-                if d2 < min_d2:
-                    min_d2 = d2
-                    if min_d2 == 0.0:
-                        return 0.0
-        return min_d2
+        d = obb_distance_lower_bound(box_a, box_b)
+        return d * d
 
     # ── Core check ────────────────────────────────────────────────────
 
@@ -280,7 +269,7 @@ class InterferenceDialog(QDialog):
                     d = math.sqrt(bdist_sq) if bdist_sq > 0 else 0.0
                     self._results.append(self._make_result(
                         i, j, id_a, name_a, id_b, name_b,
-                        "safe", d, shape_a, shape_b))
+                        "safe", d, shape_a, shape_b, estimated=True))
                     obb_skipped += 1
                 else:
                     # OBBs close/overlapping → run exact B-Rep classification
@@ -335,13 +324,16 @@ class InterferenceDialog(QDialog):
 
     @staticmethod
     def _make_result(i, j, id_a, name_a, id_b, name_b,
-                     status, distance, shape_a, shape_b):
+                     status, distance, shape_a, shape_b, estimated=False):
+        # `estimated` marks a pair the OBB filter skipped: `distance` is then a
+        # lower bound, not the measured value, and must not be shown as one.
         return {
             "i": i, "j": j,
             "id_a": id_a, "name_a": name_a,
             "id_b": id_b, "name_b": name_b,
             "status": status, "distance": distance,
             "shape_a": shape_a, "shape_b": shape_b,
+            "estimated": estimated,
         }
 
     # ── Classification ────────────────────────────────────────────────
@@ -407,8 +399,12 @@ class InterferenceDialog(QDialog):
             self._table.setItem(row, 2, QTableWidgetItem(row_data["name_b"]))
 
             d = row_data["distance"]
-            text = "Overlap" if row_data["status"] == "hard" else (
-                "—" if d == float("inf") else f"{d:.4f} mm")
+            if row_data["status"] == "hard":
+                text = "Overlap"
+            elif d == float("inf"):
+                text = "—"
+            else:
+                text = f"{'>' if row_data['estimated'] else ''}{d:.4f} mm"
             dist_item = QTableWidgetItem(text)
             dist_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -490,8 +486,12 @@ class InterferenceDialog(QDialog):
                 writer.writerow(["Status", "Part A", "Part B", "Distance (mm)"])
                 for r in self._results:
                     d = r["distance"]
-                    dist_str = (f"{d:.4f}" if d not in (float("inf"), -0.001)
-                                else ("Overlap" if r["status"] == "hard" else "—"))
+                    if r["status"] == "hard":
+                        dist_str = "Overlap"
+                    elif d == float("inf"):
+                        dist_str = "—"
+                    else:
+                        dist_str = f"{'>' if r['estimated'] else ''}{d:.4f}"
                     writer.writerow([
                         status_map.get(r["status"], "Unknown"),
                         r["name_a"],
