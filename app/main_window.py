@@ -1571,7 +1571,10 @@ class MainWindow(QMainWindow):
                 "or run the mesh first.")
             return
 
-        viewer = MeshViewer()
+        # Parented to this window on purpose: the preview is a child window, so
+        # it goes away with its host -- and it is not a primary window, so it
+        # cannot keep the application alive once the host is closed.
+        viewer = MeshViewer(self)
         viewer.load_mesh(scope,
                          mesh_params=self._view_mesh_params(),
                          title=self._mesh_viewer_title(),
@@ -2467,6 +2470,12 @@ class MainWindow(QMainWindow):
         # Drop a still-running contact analysis worker before we go away
         if self._analysis_runner is not None:
             self._analysis_runner.cancel()
+        # Close the mesh previews explicitly instead of letting them be hidden
+        # with the window: their closeEvent is what finalizes the VTK render
+        # window, and that has to run while the native handles are still alive.
+        # Iterate a copy -- closing emits finished, which drops it from the list.
+        for viewer in list(self._mesh_viewers):
+            viewer.close()
         self._occ_widget.shutdown()
         super().closeEvent(event)
 
