@@ -383,14 +383,18 @@ class MaterialsLib:
 
     # ========== JSON 持久化 ==========
 
-    def save_local_materials_to_json(self, filepath: str) -> bool:
-        """将所有的局部材料保存为 JSON 文件。"""
-        import json
-        data = {
+    def local_materials_to_dict(self) -> dict:
+        """所有局部材料 → 可序列化字典（custom_elements/compounds/mixtures）。"""
+        return {
             "custom_elements": [e.to_dict() for e in self._cust_ele_list.values()],
             "compounds": [c.to_dict() for c in self._comp_list.values()],
             "mixtures": [m.to_dict() for m in self._mix_list.values()],
         }
+
+    def save_local_materials_to_json(self, filepath: str) -> bool:
+        """将所有的局部材料保存为 JSON 文件。"""
+        import json
+        data = self.local_materials_to_dict()
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -423,6 +427,70 @@ class MaterialsLib:
             return count
         except Exception:
             return 0
+
+    def _next_unique_id(self, taken: set) -> str:
+        """同 ``_next_id()``，但保证不与 ``taken`` 中的 id 冲突。
+
+        ``add_*`` 只在 mat_id 为空时分配 id，分配前不检查冲突，因此当
+        ``_counter_id`` 落后于已加载的 id 时会静默覆盖已有材料。
+        """
+        while True:
+            mat_id = self._next_id()
+            if mat_id not in taken:
+                return mat_id
+
+    def merge_local_materials_from_dict(self, data: dict) -> Tuple[int, int]:
+        """并入局部材料，现有条目一律保留。
+
+        同名条目跳过（不覆盖当前库中的定义）；来源 id 全部丢弃后重新
+        分配，避免不同项目导出的 ``mat_1`` 互相覆盖。
+
+        Args:
+            data: 含 custom_elements / compounds / mixtures 的字典。
+
+        Returns:
+            ``(added, skipped)``。
+        """
+        if not isinstance(data, dict):
+            return 0, 0
+
+        taken = (set(self._cust_ele_list)
+                 | set(self._comp_list)
+                 | set(self._mix_list))
+        known = {n.strip() for n in self.get_local_material_names() if n}
+        added = 0
+        skipped = 0
+
+        def _merge_into(raw, cls, name_of, add):
+            nonlocal added, skipped
+            try:
+                mat = cls.from_dict(raw)
+            except Exception:
+                skipped += 1
+                return
+            name = (name_of(mat) or "").strip()
+            if not name or name in known:
+                skipped += 1
+                return
+            mat.mat_id = self._next_unique_id(taken)
+            taken.add(mat.mat_id)
+            if add(mat):
+                known.add(name)
+                added += 1
+            else:
+                skipped += 1
+
+        for raw in data.get("custom_elements") or []:
+            _merge_into(raw, CustomElement, lambda m: m.name,
+                        self.add_custom_element)
+        for raw in data.get("compounds") or []:
+            _merge_into(raw, CompoundMaterial, lambda m: m.mat_name,
+                        self.add_compound)
+        for raw in data.get("mixtures") or []:
+            _merge_into(raw, MixtureMaterial, lambda m: m.mat_name,
+                        self.add_mixture)
+
+        return added, skipped
 
     def get_mat_cate_by_id(self, mat_id: str) -> MatCategory:
         """根据 ID 获取材料分类"""

@@ -6,6 +6,7 @@ Uses QVTKRenderWindowInteractor (QOpenGLWidget) for proper OpenGL context.
 """
 
 import csv
+import math
 import os
 from typing import Optional, List, Dict, Tuple, Set
 
@@ -32,8 +33,12 @@ from vtkmodules.vtkRenderingAnnotation import (
     vtkCubeAxesActor, vtkScalarBarActor, vtkCornerAnnotation,
 )
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
-from vtkmodules.vtkCommonDataModel import vtkPlane, vtkPolyData
-from vtkmodules.vtkCommonCore import vtkLookupTable, vtkDoubleArray, vtkObject
+from vtkmodules.vtkCommonDataModel import (
+    vtkPlane, vtkPolyData, vtkStaticCellLocator,
+)
+from vtkmodules.vtkCommonCore import (
+    vtkLookupTable, vtkDoubleArray, vtkObject, reference,
+)
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 import vtkmodules.vtkRenderingOpenGL2
 import vtkmodules.vtkInteractionStyle
@@ -52,6 +57,14 @@ _MODE_TEXT = {"auto": "Auto", "assembly": "Assembly conformal",
 
 def _fmt(value) -> str:
     return f"{float(value):g}" if isinstance(value, (int, float)) else str(value)
+
+
+def _aabb_gap(a, b) -> float:
+    """Lower bound on the distance from any point inside box a to box b."""
+    dx = max(0.0, a[0] - b[1], b[0] - a[1])
+    dy = max(0.0, a[2] - b[3], b[2] - a[3])
+    dz = max(0.0, a[4] - b[5], b[4] - a[5])
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
 def _param_key(params: dict) -> tuple:
@@ -723,69 +736,111 @@ class MeshViewer(QDialog):
             self._toggle_transparency()
 
         # Spatial pre-filter: only check pairs whose bounding boxes overlap.
-        # For typical CAD assemblies (n < 20 parts), this O(n²) loop with
-        # AABB early reject is fast enough. For very large assemblies a
-        # spatial hash / BVH could be added, but AABB covers the common case.
-        for i in range(n):
-            poly_i = self._mesh_polydata[i]
-            for j in range(i + 1, n):
-                poly_j = self._mesh_polydata[j]
+        # The AABB gate rejects most pairs cheaply; the two clips below are the
+        # cost that grows with part count.
+        total_pairs = n * (n - 1) // 2
+        progress = QProgressDialog(
+            "Checking part overlaps...", "Cancel", 0, total_pairs, self
+        )
+        progress.setWindowTitle("Interference1")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setValue(0)
+        self._i1_cancel_flag = False
+        progress.canceled.connect(lambda: setattr(self, '_i1_cancel_flag', True))
+        progress.show()
+        QApplication.processEvents()
 
-                # AABB overlap → parts are close enough in space
-                b_i = poly_i.GetBounds()
-                b_j = poly_j.GetBounds()
-                if not (b_i[0] <= b_j[1] and b_i[1] >= b_j[0] and
-                        b_i[2] <= b_j[3] and b_i[3] >= b_j[2] and
-                        b_i[4] <= b_j[5] and b_i[5] >= b_j[4]):
-                    continue
+        cancelled = False
+        step = 0
+        try:
+            for i in range(n):
+                if cancelled:
+                    break
+                poly_i = self._mesh_polydata[i]
+                for j in range(i + 1, n):
+                    step += 1
+                    progress.setValue(step)
+                    QApplication.processEvents()
+                    if self._i1_cancel_flag:
+                        cancelled = True
+                        break
 
-                # Clip mesh i with mesh j's signed distance → overlap patch
-                imp_ij = vtkImplicitPolyDataDistance()
-                imp_ij.SetInput(poly_j)
+                    poly_j = self._mesh_polydata[j]
 
-                clipper_ij = vtkClipPolyData()
-                clipper_ij.SetInputData(poly_i)
-                clipper_ij.SetClipFunction(imp_ij)
-                clipper_ij.InsideOutOn()
-                clipper_ij.SetValue(0.0)
-                clipper_ij.Update()
-                overlap_ij = clipper_ij.GetOutput()
-
-                # Clip mesh j with mesh i's signed distance
-                imp_ji = vtkImplicitPolyDataDistance()
-                imp_ji.SetInput(poly_i)
-
-                clipper_ji = vtkClipPolyData()
-                clipper_ji.SetInputData(poly_j)
-                clipper_ji.SetClipFunction(imp_ji)
-                clipper_ji.InsideOutOn()
-                clipper_ji.SetValue(0.0)
-                clipper_ji.Update()
-                overlap_ji = clipper_ji.GetOutput()
-
-                n_cells_ij = overlap_ij.GetNumberOfCells()
-                n_cells_ji = overlap_ji.GetNumberOfCells()
-
-                # --- Visualize overlapping region(s) in bright red ---
-                for clip_result in [overlap_ij, overlap_ji]:
-                    if clip_result.GetNumberOfCells() == 0:
+                    # AABB overlap → parts are close enough in space
+                    b_i = poly_i.GetBounds()
+                    b_j = poly_j.GetBounds()
+                    if not (b_i[0] <= b_j[1] and b_i[1] >= b_j[0] and
+                            b_i[2] <= b_j[3] and b_i[3] >= b_j[2] and
+                            b_i[4] <= b_j[5] and b_i[5] >= b_j[4]):
                         continue
 
-                    mapper = vtkPolyDataMapper()
-                    mapper.SetInputData(clip_result)
-                    mapper.ScalarVisibilityOff()
+                    # Clip mesh i with mesh j's signed distance → overlap patch
+                    imp_ij = vtkImplicitPolyDataDistance()
+                    imp_ij.SetInput(poly_j)
 
-                    actor = vtkActor()
-                    actor.SetMapper(mapper)
-                    pp = actor.GetProperty()
-                    pp.SetColor(1.0, 0.15, 0.15)   # bright red — distinct from slate-blue mesh
-                    pp.SetOpacity(0.70)
-                    pp.SetEdgeVisibility(True)
-                    pp.SetEdgeColor(1.0, 0.5, 0.5)
-                    pp.SetLineWidth(1.5)
+                    clipper_ij = vtkClipPolyData()
+                    clipper_ij.SetInputData(poly_i)
+                    clipper_ij.SetClipFunction(imp_ij)
+                    clipper_ij.InsideOutOn()
+                    clipper_ij.SetValue(0.0)
+                    clipper_ij.Update()
+                    overlap_ij = clipper_ij.GetOutput()
 
-                    self._collision_actors.append(actor)
-                    self._renderer.AddActor(actor)
+                    # One clip on a dense part costs hundreds of ms, so pump
+                    # here too: Cancel is then at most one clip away, not two.
+                    QApplication.processEvents()
+                    if self._i1_cancel_flag:
+                        cancelled = True
+                        break
+
+                    # Clip mesh j with mesh i's signed distance
+                    imp_ji = vtkImplicitPolyDataDistance()
+                    imp_ji.SetInput(poly_i)
+
+                    clipper_ji = vtkClipPolyData()
+                    clipper_ji.SetInputData(poly_j)
+                    clipper_ji.SetClipFunction(imp_ji)
+                    clipper_ji.InsideOutOn()
+                    clipper_ji.SetValue(0.0)
+                    clipper_ji.Update()
+                    overlap_ji = clipper_ji.GetOutput()
+
+                    # --- Visualize overlapping region(s) in bright red ---
+                    for clip_result in [overlap_ij, overlap_ji]:
+                        if clip_result.GetNumberOfCells() == 0:
+                            continue
+
+                        mapper = vtkPolyDataMapper()
+                        mapper.SetInputData(clip_result)
+                        mapper.ScalarVisibilityOff()
+
+                        actor = vtkActor()
+                        actor.SetMapper(mapper)
+                        pp = actor.GetProperty()
+                        pp.SetColor(1.0, 0.15, 0.15)   # bright red — distinct from slate-blue mesh
+                        pp.SetOpacity(0.70)
+                        pp.SetEdgeVisibility(True)
+                        pp.SetEdgeColor(1.0, 0.5, 0.5)
+                        pp.SetLineWidth(1.5)
+
+                        self._collision_actors.append(actor)
+                        self._renderer.AddActor(actor)
+        finally:
+            progress.close()
+
+        if cancelled:
+            for a in self._collision_actors:
+                self._renderer.RemoveActor(a)
+            self._collision_actors.clear()
+            if self._transparent:
+                self._toggle_transparency()
+            self._btn_collide.setEnabled(True)
+            self._btn_collide.setText("⚡ Interference1")
+            self._btn_collide.setChecked(False)
+            vtkObject.GlobalWarningDisplayOn()
+            self._render_window.Render()
+            return
 
         self._btn_collide.setEnabled(True)
         self._btn_collide.setText("⚡ Interference1")
@@ -1051,30 +1106,80 @@ class MeshViewer(QDialog):
         global_max = 0.0
         per_mesh_dists: List[List[float]] = []
 
-        for i in range(n):
-            poly_i = self._mesh_polydata[i]
-            n_pts = poly_i.GetNumberOfPoints()
-            min_dists = [float('inf')] * n_pts
+        # Unsigned nearest-surface queries. The heat map only ever used abs(),
+        # so the signed value -- and the inside/outside ray cast behind it --
+        # was discarded work. A static cell locator returns the distance
+        # directly, for the same numbers without the sign test.
+        locators = []
+        for poly in self._mesh_polydata:
+            loc = vtkStaticCellLocator()
+            loc.SetDataSet(poly)
+            loc.BuildLocator()
+            locators.append(loc)
 
-            for j in range(n):
-                if i == j:
-                    continue
-                poly_j = self._mesh_polydata[j]
-                imp = vtkImplicitPolyDataDistance()
-                imp.SetInput(poly_j)
-                for k in range(n_pts):
-                    pt = poly_i.GetPoint(k)
-                    d = abs(imp.EvaluateFunction(pt))  # == 0 means touching
-                    if d < min_dists[k]:
-                        min_dists[k] = d
+        closest = [0.0, 0.0, 0.0]
+        cell_id, sub_id, dist2 = reference(0), reference(0), reference(0.0)
+        bounds = [p.GetBounds() for p in self._mesh_polydata]
 
-            per_mesh_dists.append(min_dists)
-            dmin = min(min_dists)
-            dmax = max(min_dists)
-            if dmin < global_min:
-                global_min = dmin
-            if dmax > global_max:
-                global_max = dmax
+        progress = QProgressDialog("Computing distances...", "Cancel", 0, n, self)
+        progress.setWindowTitle("Distance")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setValue(0)
+        self._dist_cancel_flag = False
+        progress.canceled.connect(lambda: setattr(self, '_dist_cancel_flag', True))
+        progress.show()
+        QApplication.processEvents()
+
+        cancelled = False
+        try:
+            for i in range(n):
+                poly_i = self._mesh_polydata[i]
+                n_pts = poly_i.GetNumberOfPoints()
+                min_dists = [float('inf')] * n_pts
+
+                # dist(p, mesh_j) >= gap(box_i, box_j) for every point p of mesh
+                # i, so visiting the other meshes nearest-box-first lets the
+                # first gap that beats nothing end the scan.
+                order = sorted((_aabb_gap(bounds[i], bounds[j]), j)
+                               for j in range(n) if j != i)
+                for gap, j in order:
+                    if gap >= max(min_dists):
+                        break
+                    loc = locators[j]
+                    for k in range(n_pts):
+                        pt = poly_i.GetPoint(k)
+                        loc.FindClosestPoint(pt, closest, cell_id, sub_id, dist2)
+                        d = math.sqrt(dist2.get())  # == 0 means touching
+                        if d < min_dists[k]:
+                            min_dists[k] = d
+                        # One mesh can hold hundreds of thousands of points:
+                        # pump the event loop so the dialog stays alive.
+                        if not (k & 0xFFF):
+                            QApplication.processEvents()
+                            if self._dist_cancel_flag:
+                                cancelled = True
+                                break
+                    if cancelled:
+                        break
+                if cancelled:
+                    break
+
+                per_mesh_dists.append(min_dists)
+                progress.setValue(i + 1)
+                dmin = min(min_dists)
+                dmax = max(min_dists)
+                if dmin < global_min:
+                    global_min = dmin
+                if dmax > global_max:
+                    global_max = dmax
+        finally:
+            progress.close()
+
+        if cancelled:
+            self._btn_distance.setChecked(False)
+            self._btn_distance.setText("🌈 Distance")
+            self._info_label.setText("Distance: cancelled")
+            return
 
         if global_max <= global_min:
             global_max = global_min + 0.001

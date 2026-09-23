@@ -2312,6 +2312,9 @@ class MainWindow(QMainWindow):
             self._assign_material_dlg.rejected.connect(
                 lambda: self._logger.log_system(
                     "Material assignment cancelled."))
+            # An import can add local materials; repopulate the tree node.
+            self._assign_material_dlg.local_materials_changed.connect(
+                self._refresh_local_material_tree)
             self._assign_material_dlg.show()
         else:
             self._assign_material_dlg.raise_()

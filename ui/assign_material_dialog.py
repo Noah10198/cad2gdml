@@ -6,12 +6,15 @@ batch-assigned materials via right-click; parent nodes are shown for
 context but are not assignable.
 """
 
-from typing import Optional, TYPE_CHECKING
+import json
+from pathlib import Path
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHeaderView, QAbstractItemView, QMenu, QWidget,
-    QComboBox, QDialogButtonBox, QLabel, QFrame, QWidgetAction
+    QComboBox, QDialogButtonBox, QLabel, QFrame, QWidgetAction,
+    QFileDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QEvent, QObject, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -32,6 +35,29 @@ COL_ENTRY_ID = 4  # hidden
 HEADERS = ["Node Name", "Source File", "Status", "Material"]
 
 _DIM_COLOR = QColor("#6c7086")  # grayed text for non-assignable rows
+
+# Exported files are self-contained: the node -> material map plus every
+# local material in the library, so the file can be replayed elsewhere
+# without the recipient owning those materials first.
+#
+# v2 keys assignments by full node path instead of bare node name. CADReader
+# names a solid "{file}_{type}_{childIndex}" with the counter restarted inside
+# every compound, so siblings of different parents collide heavily (the shipped
+# as1-oc-214.stp has 18 assignable leaves sharing only 4 names). v1 files are
+# still read: a key without "/" is treated as a bare name.
+_ASSIGN_FILE_DEFAULT = "material_assignments.json"
+_ASSIGN_FILE_VERSION = 2
+
+# Names shown per section in the import report's detail pane.
+_REPORT_PREVIEW = 30
+
+
+def _preview(items, limit: int = _REPORT_PREVIEW) -> str:
+    """Join names for a report pane, truncating long lists."""
+    head = "\n".join(items[:limit])
+    if len(items) > limit:
+        head += f"\n... and {len(items) - limit} more"
+    return head
 
 
 class _ComboHoverWatcher(QObject):
@@ -55,6 +81,9 @@ class AssignMaterialDialog(QDialog):
     """
 
     materials_saved = pyqtSignal(int, int)
+    # Emmitted after an import added local materials, so the owner can
+    # repopulate the Local Materials tree node.
+    local_materials_changed = pyqtSignal()
 
     def __init__(self, geo_agent: 'GeoDataAgent',
                  material_lib: 'MaterialsLib', parent=None):
@@ -66,6 +95,8 @@ class AssignMaterialDialog(QDialog):
         self._all_rows: list = []
         # Leaf solids only (for counting at save time)
         self._solid_nodes: list = []
+        # Last directory used by Export/Import, kept per dialog session.
+        self._last_dir = ""
 
         self.setWindowTitle("Assign Materials")
         self.setMinimumSize(750, 500)
@@ -120,6 +151,21 @@ class AssignMaterialDialog(QDialog):
         self._summary_label.setObjectName("MatDlgSummary")
         summary_layout.addWidget(self._summary_label)
         summary_layout.addStretch()
+
+        # Kept on the summary row rather than inside the button box: Qt
+        # reorders QDialogButtonBox children by role, which would drift these
+        # away from Save & Close depending on the platform style.
+        export_btn = QPushButton("Export")
+        export_btn.setToolTip("Write assignments and local materials to a file")
+        export_btn.clicked.connect(self._on_export)
+        summary_layout.addWidget(export_btn)
+
+        import_btn = QPushButton("Import")
+        import_btn.setToolTip("Load assignments, merging in local materials")
+        import_btn.clicked.connect(self._on_import)
+        summary_layout.addWidget(import_btn)
+
+        summary_layout.addSpacing(8)
 
         btn_box = QDialogButtonBox()
         save_btn = btn_box.addButton("Save && Close",
@@ -336,6 +382,189 @@ class AssignMaterialDialog(QDialog):
                        if n.material_name.strip())
         self.materials_saved.emit(assigned, len(self._solid_nodes))
         self.accept()
+
+    # ---- Export / Import ----
+
+    @staticmethod
+    def _node_path(node) -> str:
+        """Ancestry chain for a node, source file first, '/' joined.
+
+        The bare node name is unusable as a key: sibling names are unique, but
+        names repeat freely across different parents. The chain is unique
+        because siblings always differ in ``child_index``.
+        """
+        parts = []
+        cur = node
+        while cur is not None:
+            parts.append(cur.name)
+            cur = cur.parent
+        return "/".join(reversed(parts))
+
+    def _collect_assignments(self) -> Dict[str, str]:
+        """node path → material name, for every assigned leaf solid."""
+        assignments: Dict[str, str] = {}
+        for node in self._solid_nodes:
+            mat = (node.material_name or "").strip()
+            if mat:
+                assignments[self._node_path(node)] = mat
+        return assignments
+
+    def _on_export(self):
+        """Write assignments + the whole local library to a JSON file."""
+        start = (str(Path(self._last_dir) / _ASSIGN_FILE_DEFAULT)
+                 if self._last_dir else _ASSIGN_FILE_DEFAULT)
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export Material Assignments", start, "JSON Files (*.json)")
+        if not filepath:
+            return
+
+        assignments = self._collect_assignments()
+        local_mats = self._mat_lib.local_materials_to_dict()
+        data = {
+            "version": _ASSIGN_FILE_VERSION,
+            "assignments": assignments,
+            "local_materials": local_mats,
+        }
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except OSError as exc:
+            QMessageBox.warning(self, "Export Failed",
+                                f"Could not write the file:\n{exc}")
+            return
+
+        self._last_dir = str(Path(filepath).parent)
+        local_count = sum(len(v) for v in local_mats.values())
+        QMessageBox.information(
+            self, "Export Complete",
+            f"Exported {len(assignments)} assignment(s) and "
+            f"{local_count} local material(s) to:\n{filepath}")
+
+    def _refresh_rows(self):
+        """Repaint Status/Material cells from the current node state."""
+        for row, (node, _, assignable) in enumerate(self._all_rows):
+            if assignable:
+                self._update_row_status(row, node)
+
+    def _on_import(self):
+        """Merge local materials in, then assign by node name."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Import Material Assignments", self._last_dir,
+            "JSON Files (*.json)")
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Import Failed",
+                                f"Could not read the file:\n{exc}")
+            return
+
+        if not isinstance(data, dict) or not isinstance(
+                data.get("assignments"), dict):
+            QMessageBox.warning(
+                self, "Import Failed",
+                "This file does not look like a material assignment export.")
+            return
+
+        self._last_dir = str(Path(filepath).parent)
+
+        # Existing local materials win; only names the library lacks are added.
+        added, skipped = self._mat_lib.merge_local_materials_from_dict(
+            data.get("local_materials"))
+        if added:
+            self.local_materials_changed.emit()
+
+        assignments = data["assignments"]
+
+        by_path: Dict[str, List] = {}
+        by_name: Dict[str, List] = {}
+        for node in self._solid_nodes:
+            by_path.setdefault(self._node_path(node), []).append(node)
+            by_name.setdefault(node.name, []).append(node)
+
+        # A bare name is only usable when it is unambiguous on both sides: if
+        # the file itself reused it, or several current parts carry it, there
+        # is no way to tell which part was meant.
+        file_name_hits: Dict[str, int] = {}
+        for key in assignments:
+            bare = key.rsplit("/", 1)[-1]
+            file_name_hits[bare] = file_name_hits.get(bare, 0) + 1
+
+        assigned = 0
+        by_path_hits = 0
+        by_name_hits = 0
+        ambiguous: List[str] = []
+        missing: List[str] = []
+
+        for key, material in assignments.items():
+            mat = str(material).strip() if material else ""
+            if not mat:
+                continue
+            if "/" in key and key in by_path:
+                nodes = by_path[key]
+                by_path_hits += 1
+            else:
+                bare = key.rsplit("/", 1)[-1]
+                nodes = by_name.get(bare)
+                if not nodes:
+                    missing.append(key)
+                    continue
+                if len(nodes) > 1 or file_name_hits.get(bare, 0) > 1:
+                    ambiguous.append(key)
+                    continue
+                by_name_hits += 1
+            for node in nodes:
+                node.material_name = mat
+                assigned += 1
+
+        self._refresh_rows()
+        self._report_import(filepath, len(assignments), assigned,
+                            by_path_hits, by_name_hits, ambiguous, missing,
+                            added, skipped)
+
+    def _report_import(self, filepath, total, assigned, by_path_hits,
+                       by_name_hits, ambiguous, missing, added, skipped):
+        """Summary popup: what was detected vs. what actually landed."""
+        summary = [
+            f"File: {filepath}",
+            f"Assignments in file: {total}",
+            f"Matched by full path: {by_path_hits}",
+            f"Rows assigned: {assigned} / {len(self._solid_nodes)}",
+        ]
+        if by_name_hits:
+            summary.append(
+                f"Matched by name only: {by_name_hits} (structure changed)")
+        if ambiguous:
+            summary.append(f"Skipped, name is ambiguous: {len(ambiguous)}")
+        if missing:
+            summary.append(f"Skipped, not in this geometry: {len(missing)}")
+        if added or skipped:
+            line = f"Local materials added: {added}"
+            if skipped:
+                line += f" ({skipped} skipped, kept existing)"
+            summary.append(line)
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Import Complete")
+        box.setText("\n".join(summary))
+
+        notes = []
+        if ambiguous:
+            notes.append(
+                "Skipped — the name matches several parts, so the file does "
+                "not say which one it meant. Files written before v2 key by "
+                "name and cannot be resolved here:\n" + _preview(ambiguous))
+        if missing:
+            notes.append(
+                "Skipped — no part in the current geometry carries this path "
+                "or name:\n" + _preview(missing))
+        if notes:
+            box.setDetailedText("\n\n".join(notes))
+        box.exec()
 
     # ---- Theming ----
 
