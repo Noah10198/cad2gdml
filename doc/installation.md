@@ -17,9 +17,9 @@ CAD2GDML depends on the following key components:
 
 ---
 
-## Method 1: Using the Minimal Environment File (Not Recommended)
+## Method 1: Using the Provided Environment File (Recommended)
 
-`environment.yml` contains only core dependencies — fast to install and small in size, but may fail on Windows due to missing transitive dependencies.
+`environment.yml` contains the core dependencies of this module. It is fast to install and `conda env create` resolves every transitive dependency from conda-forge.
 
 ### Steps
 
@@ -46,34 +46,7 @@ conda activate pyoccenv
 
 ---
 
-## Method 2: Using the Full Environment File (Recommended for Reproducing an Existing Environment)
-
-`environment_full.yml` is the output of `conda env export`, recording exact version numbers of every package in the environment.
-
-### Steps
-
-```bash
-# 1. Create environment from the full environment file
-conda env create -f environment_full.yml
-
-# 2. Activate the environment
-conda activate pyoccenv
-```
-
-> **Windows note**: Run conda commands in **Anaconda PowerShell Prompt** (Start Menu → "Anaconda PowerShell Prompt") to ensure `conda` is recognized.
-
-### Comparison with Minimal File
-
-| Aspect | `environment.yml` | `environment_full.yml` |
-|--------|-------------------|------------------------|
-| Lines | ~13 lines | ~160 lines |
-| Contents | Only core dependencies | Every package (including transitive ones) |
-| Cross-platform | Yes, portable | No, bound to current OS/arch |
-| Reproducibility | Approximate (resolves to latest compatible versions) | Exact (pins every version) |
-
----
-
-## Method 3: Manual Setup (Fully Customizable)
+## Method 2: Manual Setup (Fully Customizable)
 
 If you prefer to set up step by step, or you already have a conda environment:
 
