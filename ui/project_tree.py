@@ -2,16 +2,16 @@
 ProjectTreeWidget - Project tree panel for managing geometry hierarchy.
 
 Provides a QTreeWidget with:
-- A "Geometry" root node containing imported STEP file hierarchies
+- A bold "Project of CAD2GDML" root row, the panel's single entry point
+- A "Geometry" node under it, holding the imported STEP file hierarchies
 - Global/Local Materials nodes for material assignment
 - Checkbox visibility toggling per geometry item
-- Visibility checkbox toggling per geometry item
 """
 
 from typing import Optional, TYPE_CHECKING
 
 from PyQt6.QtWidgets import (
-    QTreeWidget, QTreeWidgetItem, QMenu, QWidget, QVBoxLayout, QLabel
+    QTreeWidget, QTreeWidgetItem, QMenu, QWidget, QVBoxLayout
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 # Tree item type constants
 TREE_ITEM_TYPE = {
+    'PROJECT_ROOT': 1000,
     'GEO_ROOT': 1001,
     'GEO_SOLID': 1002,
     'GLOBAL_MATERIAL': 1003,
@@ -70,15 +71,10 @@ class ProjectTreeWidget(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        """Build the tree and header label."""
+        """Build the tree with a single root node as the main entry point."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-
-        header = QLabel("  Project Tree")
-        header.setObjectName("TreeHeader")
-        header.setFixedHeight(28)
-        layout.addWidget(header)
 
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
@@ -90,14 +86,26 @@ class ProjectTreeWidget(QWidget):
         self._tree.setAnimated(True)
         self._tree.setIndentation(16)
 
+        # Single bold root row: the total node entrance, with the three groups
+        # hanging under it (same shape as the gdmleditor tree). The dock above
+        # is already titled "Project Tree", so this row names the project
+        # instead of repeating that label.
+        self._project_root = TreeItemWithInfo(
+            self._tree, "Project of CAD2GDML", TREE_ITEM_TYPE['PROJECT_ROOT']
+        )
+        font = self._project_root.font(0)
+        font.setBold(True)
+        self._project_root.setFont(0, font)
+        self._project_root.setExpanded(True)
+
         self._material_global = TreeItemWithInfo(
-            self._tree, "Global Materials", TREE_ITEM_TYPE['GLOBAL_MATERIAL']
+            self._project_root, "Global Materials", TREE_ITEM_TYPE['GLOBAL_MATERIAL']
         )
         self._material_local = TreeItemWithInfo(
-            self._tree, "Local Materials", TREE_ITEM_TYPE['LOCAL_MATERIAL']
+            self._project_root, "Local Materials", TREE_ITEM_TYPE['LOCAL_MATERIAL']
         )
         self._geometry_root = TreeItemWithInfo(
-            self._tree, "Geometry", TREE_ITEM_TYPE['GEO_ROOT']
+            self._project_root, "Geometry", TREE_ITEM_TYPE['GEO_ROOT']
         )
 
         self._geometry_root.setExpanded(True)
@@ -117,20 +125,14 @@ class ProjectTreeWidget(QWidget):
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
 
     def set_dark_theme(self, is_dark: bool):
-        """Switch between dark and light appearance."""
+        """Switch between dark and light appearance — matches gdmleditor's palette."""
         if is_dark:
-            hdr_bg = "#181825"
-            hdr_fg = "#a6adc8"
-            hdr_border = "#313244"
             tree_bg = "#1e1e2e"
             tree_fg = "#cdd6f4"
             sel_bg = "#313244"
             sel_fg = "#cdd6f4"
             hover_bg = "#282840"
         else:
-            hdr_bg = "#e8e8e8"
-            hdr_fg = "#555555"
-            hdr_border = "#d0d0d0"
             tree_bg = "#ffffff"
             tree_fg = "#2c2c2c"
             sel_bg = "#d0e4f6"
@@ -138,14 +140,6 @@ class ProjectTreeWidget(QWidget):
             hover_bg = "#e8f0fe"
 
         self.setStyleSheet(f"""
-            #TreeHeader {{
-                background-color: {hdr_bg};
-                color: {hdr_fg};
-                font-size: 13px;
-                font-weight: bold;
-                padding: 4px 8px;
-                border-bottom: 1px solid {hdr_border};
-            }}
             QTreeWidget {{
                 background-color: {tree_bg};
                 color: {tree_fg};
@@ -163,6 +157,9 @@ class ProjectTreeWidget(QWidget):
             }}
             QTreeWidget::item:hover {{
                 background-color: {hover_bg};
+            }}
+            QTreeWidget::item:disabled {{
+                color: {tree_fg};
             }}
         """)
 

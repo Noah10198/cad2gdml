@@ -29,10 +29,10 @@ Multiple files can be selected and imported at once.
 
 ## Project Tree
 
-The project tree (left panel) has three root nodes:
+The project tree (left panel) shows one bold root row, with three groups under it:
 
 ```
-Project Tree
+Project of CAD2GDML
 ├── Global Materials     — NIST standard materials (G4_*) loaded from data/nist.txt
 ├── Local Materials      — User-defined materials (compounds, mixtures, custom elements)
 └── Geometry             — Imported CAD file hierarchy
