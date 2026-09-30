@@ -324,6 +324,24 @@ class MaterialsLib:
                 or self._comp_list.pop(mat_id, None) is not None
                 or self._mix_list.pop(mat_id, None) is not None)
 
+    def update_local_material(self, mat) -> bool:
+        """Overwrite an existing local material in place, keeping its mat_id.
+
+        Used when a saved material is re-opened for editing: the id is kept so
+        nothing else has to track a change, and a category switch simply moves
+        the entry to the other store.
+        """
+        if not mat.mat_id:
+            mat.mat_id = self._next_id()
+        self.delete_material(mat.mat_id)
+        if isinstance(mat, CompoundMaterial):
+            self._comp_list[mat.mat_id] = mat
+        elif isinstance(mat, MixtureMaterial):
+            self._mix_list[mat.mat_id] = mat
+        else:
+            return False
+        return True
+
     @staticmethod
     def to_gdml_string(mat) -> str:
         """

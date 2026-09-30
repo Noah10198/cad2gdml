@@ -409,10 +409,26 @@ class AssignMaterialDialog(QDialog):
                 assignments[self._node_path(node)] = mat
         return assignments
 
+    def _start_dir(self) -> str:
+        """Folder the file dialog should open in.
+
+        _last_dir is the folder the previous export/import in this session
+        used, so it may be gone by now (removable drive, cleaned temp folder,
+        file moved away), and on the first call there is none yet. A folder
+        the native dialog cannot open makes it fall back to a location of its
+        own, so walk up to the nearest ancestor that still exists instead of
+        handing the folder over unchecked. The result stays absolute: a bare
+        relative name would be resolved against the process working directory.
+        """
+        base = Path(self._last_dir) if self._last_dir else Path.home()
+        for candidate in (base, *base.parents):
+            if candidate.is_dir():
+                return str(candidate)
+        return str(Path.home())
+
     def _on_export(self):
         """Write assignments + the whole local library to a JSON file."""
-        start = (str(Path(self._last_dir) / _ASSIGN_FILE_DEFAULT)
-                 if self._last_dir else _ASSIGN_FILE_DEFAULT)
+        start = str(Path(self._start_dir()) / _ASSIGN_FILE_DEFAULT)
         filepath, _ = QFileDialog.getSaveFileName(
             self, "Export Material Assignments", start, "JSON Files (*.json)")
         if not filepath:
@@ -449,7 +465,7 @@ class AssignMaterialDialog(QDialog):
     def _on_import(self):
         """Merge local materials in, then assign by node name."""
         filepath, _ = QFileDialog.getOpenFileName(
-            self, "Import Material Assignments", self._last_dir,
+            self, "Import Material Assignments", self._start_dir(),
             "JSON Files (*.json)")
         if not filepath:
             return

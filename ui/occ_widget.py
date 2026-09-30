@@ -314,7 +314,15 @@ class WidgetOCC(QWidget):
 
     def shutdown(self):
         """Properly release OCC display/OpenGL context before the parent window
-        is destroyed, preventing 'wglMakeCurrent() has failed' errors."""
+        is destroyed, preventing 'wglMakeCurrent() has failed' errors.
+
+        The three calls go from the outside in: the geometry, then the view,
+        then the viewer itself -- Viewer.Remove() is what suppresses the
+        viewer and tears down its window and GL context. Leaving that last one
+        to the C++ destructor is what lets the context outlive its device.
+        _displayed_shapes is kept on purpose: _re_display_all_stored_shapes
+        needs it if _ensure_display_valid revives the widget.
+        """
         self._inited = False
         if self._display is not None:
             try:
@@ -323,6 +331,10 @@ class WidgetOCC(QWidget):
                 pass
             try:
                 self._display.View.Remove()
+            except Exception:
+                pass
+            try:
+                self._display.Viewer.Remove()
             except Exception:
                 pass
         self._display = None

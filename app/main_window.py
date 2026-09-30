@@ -691,6 +691,8 @@ class MainWindow(QMainWindow):
             self._slot_add_local_material)
         self._project_tree.remove_local_material_requested.connect(
             self._slot_remove_local_material)
+        self._project_tree.edit_local_material_requested.connect(
+            self._slot_edit_local_material)
         self._project_tree.save_local_materials_requested.connect(
             self._slot_save_local_materials)
         self._project_tree.load_local_materials_requested.connect(
@@ -2322,21 +2324,38 @@ class MainWindow(QMainWindow):
 
     def _slot_add_local_material(self):
         """Open dialog to add a local material, then refresh tree."""
-        from ui.local_material_dialog import LocalMaterialDialog
-        dlg = LocalMaterialDialog(self._library, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._refresh_local_material_tree()
-            if MaterialsLib.GDML_OUTPUT_ENABLED:
-                gdml = dlg.last_gdml
-                if gdml:
-                    self._logger.log_system("━━ GDML Material Definition ━━━━", level=LogLevel.INFO)
-                    for line in gdml.strip().splitlines():
-                        self._logger.log_system(line, level=LogLevel.INFO)
-                    self._logger.log_system("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", level=LogLevel.INFO)
-                    return
+        self._run_local_material_dialog()
+
+    def _slot_edit_local_material(self, mat_id: str):
+        """Re-open a saved local material for editing."""
+        mat = self._library.get_compound(mat_id) or self._library.get_mixture(mat_id)
+        if mat is None:
+            # Custom elements and NIST entries have no editor of their own yet.
             self._logger.log_system(
-                f"Local material added.",
-                level=LogLevel.INFO)
+                "Only compound and mixture materials can be edited.",
+                level=LogLevel.ERROR)
+            return
+        self._run_local_material_dialog(mat)
+
+    def _run_local_material_dialog(self, material=None):
+        from ui.local_material_dialog import LocalMaterialDialog
+        dlg = LocalMaterialDialog(self._library, self, material=material)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._refresh_local_material_tree()
+        if MaterialsLib.GDML_OUTPUT_ENABLED:
+            gdml = dlg.last_gdml
+            if gdml:
+                self._logger.log_system("━━ GDML Material Definition ━━━━", level=LogLevel.INFO)
+                for line in gdml.strip().splitlines():
+                    self._logger.log_system(line, level=LogLevel.INFO)
+                self._logger.log_system("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", level=LogLevel.INFO)
+                return
+        saved = dlg.saved_material
+        name = saved.mat_name if saved else "material"
+        self._logger.log_system(
+            f"Local material '{name}' {'updated' if material else 'added'}.",
+            level=LogLevel.INFO)
 
     def _slot_save_local_materials(self):
         """Save all local materials to a JSON file."""
@@ -2479,6 +2498,13 @@ class MainWindow(QMainWindow):
         # Iterate a copy -- closing emits finished, which drops it from the list.
         for viewer in list(self._mesh_viewers):
             viewer.close()
+        # Same reasoning for the non-modal dialogs that own an OCC viewport:
+        # Qt destroys child windows without calling closeEvent on them, so an
+        # open one would keep a GL context alive past the death of its device
+        # and OCCT would report 'wglMakeCurrent() has failed'.
+        for dlg in (self._export_gdml_dlg, self._interference_dlg):
+            if dlg is not None:
+                dlg.close()
         self._occ_widget.shutdown()
         super().closeEvent(event)
 

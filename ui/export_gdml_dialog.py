@@ -159,6 +159,32 @@ class _GDMLPreview(QFrame):
             except Exception:
                 pass
 
+    def shutdown(self):
+        """Release the OCC display/GL context while the native window is alive.
+
+        Same contract as OCCPreview.shutdown: from the outside in, geometry then
+        view then viewer, where Viewer.Remove() is the one that suppresses the
+        viewer and its window. Left to the destructor it would outlive its
+        device and OCCT would report
+        'wglMakeCurrent() has failed. The handle is invalid.' at teardown.
+        """
+        if self._inited and self._display is not None:
+            try:
+                self._display.Context.RemoveAll(True)
+            except Exception:
+                pass
+            try:
+                self._display.View.Remove()
+            except Exception:
+                pass
+            try:
+                self._display.Viewer.Remove()
+            except Exception:
+                pass
+        self._display = None
+        self._inited = False
+        self._native_win = None
+
     # ---- mouse interaction ----
     def mousePressEvent(self, event):
         if not self._inited:
@@ -345,6 +371,10 @@ class ExportGdmlDialog(QDialog):
         super().showEvent(event)
         QApplication.processEvents()
         self._populate_preview()
+
+    def closeEvent(self, event):
+        self._preview.shutdown()
+        super().closeEvent(event)
 
     # ---- world box label ----
 

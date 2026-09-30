@@ -59,6 +59,7 @@ class ProjectTreeWidget(QWidget):
     assign_material_requested = pyqtSignal(str, str)
     add_local_material_requested = pyqtSignal()
     remove_local_material_requested = pyqtSignal(str)  # mat_id
+    edit_local_material_requested = pyqtSignal(str)  # mat_id
     save_local_materials_requested = pyqtSignal()
     load_local_materials_requested = pyqtSignal()
     delete_geometry_requested = pyqtSignal(str)  # entry_id of file node to delete
@@ -110,6 +111,7 @@ class ProjectTreeWidget(QWidget):
 
         # Connect signals
         self._tree.itemClicked.connect(self._on_item_clicked)
+        self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._tree.itemChanged.connect(self._on_item_changed)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
@@ -210,9 +212,19 @@ class ProjectTreeWidget(QWidget):
         if item.type() == TREE_ITEM_TYPE['GEO_ROOT'] and item.parent() is self._geometry_root:
             menu = QMenu(self)
             entry_id = item.get_entry_id()
-            # Placement before deletion: a file is placed as a whole, so this
-            # belongs to the file row and to no row under it. The order is
-            # deliberate -- the destructive entry stays at the bottom.
+            # Bulk visibility is about the solids inside the file, the two
+            # entries below act on the file as a whole, so the separator keeps
+            # the groups apart. Placement before deletion: a file is placed as
+            # a whole, so that belongs to the file row and to no row under it.
+            # The order is deliberate -- the destructive entry stays at the
+            # bottom.
+            show_action = menu.addAction("👁️ Show All")
+            show_action.triggered.connect(
+                lambda: self._set_branch_visibility(item, True))
+            hide_action = menu.addAction("🙈 Hide All")
+            hide_action.triggered.connect(
+                lambda: self._set_branch_visibility(item, False))
+            menu.addSeparator()
             edit_action = menu.addAction("✏️ Edit Transform...")
             edit_action.triggered.connect(
                 lambda: self.edit_transform_requested.emit(entry_id))
@@ -238,8 +250,11 @@ class ProjectTreeWidget(QWidget):
             if not mat_id:
                 return
             menu = QMenu(self)
-            del_action = menu.addAction("❌ Delete Material")
+            edit_action = menu.addAction("✏️ Edit Material...")
+            edit_action.triggered.connect(
+                lambda: self.edit_local_material_requested.emit(mat_id))
             menu.addSeparator()
+            del_action = menu.addAction("❌ Delete Material")
             del_action.triggered.connect(
                 lambda: self.remove_local_material_requested.emit(mat_id))
             menu.exec(self._tree.viewport().mapToGlobal(pos))
@@ -262,6 +277,14 @@ class ProjectTreeWidget(QWidget):
         elif item.type() == TREE_ITEM_TYPE['LOCAL_MATERIAL']:
             user_data = item.data(0, Qt.ItemDataRole.UserRole) or ""
             self.item_selected.emit(user_data)
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, col: int):
+        """Double-clicking a local material re-opens it for editing."""
+        if item.type() != TREE_ITEM_TYPE['LOCAL_MATERIAL']:
+            return
+        mat_id = self._extract_local_mat_id(item)
+        if mat_id:
+            self.edit_local_material_requested.emit(mat_id)
 
     def _on_item_changed(self, item: QTreeWidgetItem, col: int):
         if col != 0:
@@ -289,6 +312,19 @@ class ProjectTreeWidget(QWidget):
             child = parent_item.child(i)
             child.setCheckState(0, state)
             self._cascade_check_state(child, state)
+
+    def _set_branch_visibility(self, item: QTreeWidgetItem, visible: bool):
+        """Check or uncheck every solid under a file node in one go.
+
+        Reuses the checkbox cascade and the per-leaf signal, so the 3D view
+        stays in sync without a second code path. The item itself is left
+        alone: file nodes carry no checkbox of their own.
+        """
+        state = Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked
+        self._tree.blockSignals(True)
+        self._cascade_check_state(item, state)
+        self._tree.blockSignals(False)
+        self._emit_visibility_for_leaves(item, state)
 
     def _emit_visibility_for_leaves(self, item: QTreeWidgetItem, state: Qt.CheckState):
         """Recursively emit visibility signals only for GEO_SOLID leaf items."""
