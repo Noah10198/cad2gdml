@@ -2,7 +2,7 @@
 
 **CAD to GDML geometry conversion tool** — Convert CAD models into Geant4 simulation geometry (GDML) with mesh generation via GMSH.
 
-> **Version 2.0.0** ｜ Last updated 2026-09-30 ｜ Chinese version: [README.zh.md](README.zh.md)
+> **Version 2.0.0** ｜ Chinese version: [README.zh.md](README.zh.md)
 
 
 ## Overview
@@ -246,7 +246,7 @@ STEP / IGES / BREP / STL
 
 ## Related Documents
 
-- **Module documentation (`doc/`)**: [installation](doc/installation.md) ｜ [geometry import](doc/import_geometry.md) ｜ [mesh generation](doc/mesh.md) ｜ [mesh viewer](doc/mesh_viewer.md) ｜ [material assignment](doc/material_assignment.md) ｜ [GDML export](doc/export_gdml.md) ｜ [interference dialog](doc/interference_dialog.md) ｜ [Interference 1 algorithm](doc/interference1_algorithm.md) ｜ [Interference 2 algorithm](doc/interference2_algorithm.md) ｜ [conformal meshing plan](doc/assembly_fragment_gdml.md) ｜ [re-mesh scope UI](doc/assembly_fragment_ui.md)
+- **Module documentation (`doc/`)**: [installation](doc/installation.md) ｜ [geometry import](doc/import_geometry.md) ｜ [mesh generation](doc/mesh.md) ｜ [mesh viewer](doc/mesh_viewer.md) ｜ [material assignment](doc/material_assignment.md) ｜ [GDML export](doc/export_gdml.md) ｜ [interference dialog](doc/interference_dialog.md) ｜ [Interference 1 algorithm](doc/interference1_algorithm.md) ｜ [Interference 2 algorithm](doc/interference2_algorithm.md) ｜ [re-mesh UI mockup](doc/remesh_ui_mockup.html)
 - **Example assembly demo**: [exampleSTEP/merge_demo/README.md](exampleSTEP/merge_demo/README.md)
 - Chinese version of this file: [README.zh.md](README.zh.md)
 

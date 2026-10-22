@@ -80,7 +80,7 @@ The exported CSV uses `utf-8-sig` encoding (BOM) so Excel opens it correctly on 
 ### Threshold
 
 ```python
-CONTACT_THRESHOLD = 0.0000001  # mm
+CONTACT_THRESHOLD = 0.1  # mm
 ```
 
 **To modify**: edit the constant at the top of `ui/interference_dialog.py`:

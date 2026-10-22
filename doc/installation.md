@@ -86,8 +86,9 @@ The Python `gmsh` package installed above is only the API interface. The actual 
 ## Verifying the Installation
 
 ```bash
+conda activate pyoccenv
+cd <path-to-cad2gdml>
 python main.py
-# in vscode terminal show be like: (pyoccenv) PS E:\cad2gdml> & D:/anaconda3/envs/pyoccenv/python.exe e:/cad2gdml/codebuddy-2st/main.py
 ```
 
 If the GUI starts successfully, the installation is complete.

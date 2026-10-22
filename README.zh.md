@@ -2,7 +2,7 @@
 
 **CAD 转 GDML 几何转换工具** —— 把 CAD 模型转换为 Geant4 仿真几何（GDML），并使用 GMSH 生成网格。
 
-> **版本 2.0.0** ｜ 最后更新 2026-09-30 ｜ 英文版：[README.md](README.md)
+> **版本 2.0.0** ｜ 英文版：[README.md](README.md)
 
 
 ## 概述
@@ -243,7 +243,7 @@ STEP / IGES / BREP / STL
 
 ## 相关文档
 
-- **模块文档（`doc/`）**：[安装](doc/installation.md) ｜ [几何导入](doc/import_geometry.md) ｜ [网格生成](doc/mesh.md) ｜ [网格查看器](doc/mesh_viewer.md) ｜ [材料赋值](doc/material_assignment.md) ｜ [GDML 导出](doc/export_gdml.md) ｜ [干涉检查对话框](doc/interference_dialog.md) ｜ [Interference 1 算法](doc/interference1_algorithm.md) ｜ [Interference 2 算法](doc/interference2_algorithm.md) ｜ [贴合式网格方案](doc/assembly_fragment_gdml.md) ｜ [Re-mesh 范围界面](doc/assembly_fragment_ui.md)
+- **模块文档（`doc/`）**：[安装](doc/installation.md) ｜ [几何导入](doc/import_geometry.md) ｜ [网格生成](doc/mesh.md) ｜ [网格查看器](doc/mesh_viewer.md) ｜ [材料赋值](doc/material_assignment.md) ｜ [GDML 导出](doc/export_gdml.md) ｜ [干涉检查对话框](doc/interference_dialog.md) ｜ [Interference 1 算法](doc/interference1_algorithm.md) ｜ [Interference 2 算法](doc/interference2_algorithm.md) ｜ [re-mesh 界面 mockup](doc/remesh_ui_mockup.html)
 - **示例装配体演示**：[exampleSTEP/merge_demo/README.md](exampleSTEP/merge_demo/README.md)
 - 本文件的英文版：[README.md](README.md)
 

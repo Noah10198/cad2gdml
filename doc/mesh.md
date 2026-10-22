@@ -40,12 +40,30 @@ Clicking **Mesh** opens the **Mesh Generation Parameters** dialog:
 
 ---
 
+## Meshing Modes
+
+Two modes exist. The mode is chosen automatically from the contact analysis that runs right
+after import (`mesh/assembly_analysis.py`), not by the user:
+
+| Mode | How it works | When it is used |
+|------|--------------|-----------------|
+| **Per-solid** | One STEP file and one gmsh process per solid body. Both sides of a contact face get their own facet set, so coincident facets remain and Geant4 may report false Overlaps. | A single solid, or an assembly whose contact analysis failed. |
+| **Assembly (conformal)** | All solids are merged into one gmsh session and a single `BooleanFragments` genuinely splits the touching faces, so both sides share the same topology and only one set of interface facets remains. The resulting triangles are then reassigned back to their original solids. | Two or more solids with touching contact faces. |
+
+A failed assembly job is never a dead end: every failing step **degrades to per-solid
+meshing** and the result is marked *non-conformal*, which the GDML export dialog gates on.
+A degraded run reports at most the first 8 contact pairs.
+
 ## Meshing Process
 
 ### Background Execution
 
 - The `MeshRunner` extends `QThread` and runs gmsh.exe via `QProcess`.
-- It processes each solid body sequentially.
+- Per-solid mode runs one gmsh process per body, sequentially; assembly mode runs a single
+  job for the whole group.
+- Timeout: 3 minutes per solid, 15 minutes for a single assembly job.
+- The wait loop polls in 200 ms slices instead of one long `waitForFinished`, so **Cancel**
+  stays responsive.
 
 ### Per-Solid Workflow
 
@@ -56,7 +74,7 @@ For each solid node:
 3. **Launch** `gmsh.exe` with the `.geo` script:
 
 ```bash
-gmsh.exe input.geo -  # generates .vtk, .msh output
+gmsh.exe input.geo -1  # -1 = non-interactive; writes the .vtk / .msh named in the script
 ```
 
 4. **Read** the generated `.vtk` file back into the application.
@@ -79,9 +97,35 @@ Save "output.msh";
 Exit;
 ```
 
+### Assembly .geo Script
+
+One script for the whole group: `Merge` is called once per STEP file, then a single
+`BooleanFragments` splits the contact faces, and the same parameter tail is appended.
+
+```python
+SetFactory("OpenCASCADE");
+Merge "solid_1.step";
+Merge "solid_2.step";
+BooleanFragments{ Volume{:}; Delete; }{ }
+Mesh.Algorithm = 6;
+Mesh.Smoothing = 1;
+Mesh.CharacteristicLengthFactor = 1.0;
+Mesh.MeshSizeMin = 0.01;      # computed from the overall bounding box
+Mesh.MeshSizeMax = 0.1;
+Mesh.ElementOrder = 1;
+Mesh 2;
+Save "assembly.vtk";
+Exit;
+```
+
+The mesh size factors come from the **overall** bounding box, because the whole group is a
+single gmsh job.
+
 ### Progress Reporting
 
-Progress is estimated per solid as a fraction of the total number of solids.
+Per-solid mode estimates progress as a fraction of the total number of solids. Assembly mode
+reports stage ranges instead: contact analysis 0–18 %, Boolean fragment + assembly meshing
+18–60 %, triangle reassignment 60–100 %.
 
 ---
 
@@ -137,7 +181,9 @@ Click **Export Mesh** on the toolbar.
 
 The application searches for `gmsh.exe` in the following order:
 
-1. `gmsh/` folder — place `gmsh.exe` inside this directory
-2. System `PATH`
+1. `gmsh/` folder inside the project directory — place `gmsh.exe` there
+2. `../3rd_app/gmsh.exe` (C++ reference layout)
+3. `../sourcecode/output/3rd_app/gmsh.exe`
+4. System `PATH`
 
 If `gmsh.exe` is not found, mesh generation will fail with an error message.
