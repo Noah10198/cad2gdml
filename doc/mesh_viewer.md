@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Mesh Viewer** is a standalone, non-blocking 3D mesh preview window powered by VTK (`QVTKRenderWindowInteractor`). It appears after mesh generation completes, allowing users to visually inspect the resulting tetrahedral meshes, detect interferences, and evaluate mesh quality.
+**Mesh Viewer** is a standalone, non-blocking 3D mesh preview window powered by VTK (`QVTKRenderWindowInteractor`). It appears after mesh generation completes, allowing users to visually inspect the resulting surface (triangular) meshes, detect interferences, and evaluate mesh quality.
 
 The window is **non-modal** — the main application remains fully interactive while the viewer is open, and multiple viewer instances may be opened simultaneously for side-by-side comparison of different mesh parameters.
 

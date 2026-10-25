@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Interference1** is a mesh-based interference (overlap) detection algorithm for CAD parts that have been discretized into unstructured (tetrahedral) grids. It not only detects *whether* two parts interfere, but also **extracts and visualizes the actual overlapping mesh regions**.
+**Interference1** is a mesh-based interference (overlap) detection algorithm for CAD parts that have been discretized into **triangular surface meshes** — the triangles are stored in VTK `UNSTRUCTURED_GRID` containers, but they are surface facets, not tetrahedra (see [mesh.md](mesh.md)). It not only detects *whether* two parts interfere, but also **extracts and visualizes the actual overlapping mesh regions**.
 
 ## Algorithm Pipeline
 
@@ -89,7 +89,7 @@ A dynamic tolerance of 0.3% of the model diagonal is computed during mesh load. 
 | `vtkImplicitPolyDataDistance` | Computes signed distance from a point to a polygonal mesh surface |
 | `vtkClipPolyData` | Clips polygonal data using an implicit function |
 | `vtkPolyDataNormals` | Pre-computes consistent point normals for the distance function |
-| `vtkGeometryFilter` | Converts unstructured grids to polygonal data |
+| `vtkGeometryFilter` | Converts the triangle-only `UNSTRUCTURED_GRID` containers to polygonal data |
 
 ## Usage
 

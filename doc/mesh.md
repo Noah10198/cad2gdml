@@ -2,7 +2,22 @@
 
 ## Overview
 
-Mesh generation converts CAD solid bodies into finite-element tetrahedral meshes using **GMSH** (`gmsh.exe`). The process runs in a background thread, keeping the UI responsive.
+Mesh generation tessellates the **surfaces** of CAD solid bodies into triangles using **GMSH**
+(`gmsh.exe`). It is a 2D surface mesh (`Mesh 2` in the `.geo` script), not a tetrahedral volume
+mesh. The process runs in a background thread, keeping the UI responsive.
+
+> **File format is not the mesh type.** The `.vtk` files are written as legacy
+> `DATASET UNSTRUCTURED_GRID` because that is what gmsh emits and what
+> `vtkUnstructuredGridReader` reads, but every cell in them is a triangle
+> (`CELL_TYPES = 5`); there are no tetrahedra anywhere in the pipeline. `vtkGeometryFilter`
+> is used in the readers only to turn that container back into `vtkPolyData`.
+>
+> `core/gdml_generator.py` reads those triangles and writes one GDML `<tessellated>` solid per
+> part, so each part's facets must be **closed** (every edge shared by exactly two triangles,
+> see `mesh/vtk_tools.check_closed`) and **consistently oriented** — `G4TessellatedSolid`
+> decides inside/outside from the facet normals, so a flipped patch turns into a phantom
+> Overlap in Geant4. Finer triangles buy accuracy; closedness and orientation decide whether
+> the geometry is usable at all.
 
 ---
 
