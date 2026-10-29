@@ -46,7 +46,7 @@ CAD2GDML 是一个桌面 GUI 程序，连接 CAD 设计与粒子物理仿真：�
 | pythonocc-core | >= 7.6 |
 | VTK | >= 9.2 |
 | numpy | >= 1.21 |
-| GMSH | >= 4.10 —— 已随包提供 `gmsh/gmsh.exe`，无需另行安装 |
+| gmsh | >= 4.10 —— Python 包（`pip install gmsh`），自带完整网格内核 |
 
 
 ## 安装
@@ -100,12 +100,12 @@ CAD2GDML 是一个桌面 GUI 程序，连接 CAD 设计与粒子物理仿真：�
     mesh_viewer.md          — 网格查看器使用说明
   exampleSTEP/              — 示例 STEP 装配体与演示脚本
   fileio/                   — 文件 I/O（占位）
-  gmsh/                     — 随包提供的 gmsh.exe
   icon/                     — 应用图标（cad2gdml.svg）
   mesh/
     assembly_analysis.py    — 导入后的后台接触分析
     gmsh_dialog.py          — 网格参数配置对话框
-    mesh_runner.py          — GMSH 后台线程（QProcess + .geo 脚本）
+    gmsh_worker.py          — 子进程：通过 gmsh API 执行单个作业
+    mesh_runner.py          — GMSH 后台线程（QProcess + 作业描述文件）
     mesh_viewer.py          — 基于 VTK 的 3D 网格查看器（非模态）
     remesh_scope_dialog.py  — 范围面板：分组、参数、运行进度
     scope.py                — 接触图分组（Re-mesh 的单位）
@@ -162,8 +162,8 @@ CAD2GDML 是一个桌面 GUI 程序，连接 CAD 设计与粒子物理仿真：�
   └──────────┘    └──────────────┘    └──────────┘    └───────────┘
        │                 │                 │                 │
        ▼                 ▼                 ▼                 ▼
-  CAD File→OCC    NIST / Custom       GMSH .exe         GDML XML
-   B-Rep tree     material lib        (QProcess)        tessellated
+  CAD File→OCC    NIST / Custom       gmsh 模块         GDML XML
+   B-Rep tree     material lib        (子进程)          tessellated
 ```
 
 所有网格生成都在后台 `QThread` 中执行，以保证界面响应；材料、网格、导出等对话框均以非模态方式打开。
@@ -179,7 +179,7 @@ CAD2GDML 是一个桌面 GUI 程序，连接 CAD 设计与粒子物理仿真：�
       ▼                  ▼                      ▼
 ┌──────────┐    ┌──────────────┐       ┌──────────────┐
 │   core/  │    │     ui/      │       │    mesh/     │
-│ data     │    │ Qt dialogs   │       │ GMSH process │
+│ data     │    │ Qt dialogs   │       │ gmsh worker  │
 │ models   │    │ OCC viewer   │       │ VTK viewer   │
 │ materials│    │ project tree │       │ mesh preview │
 └──────────┘    └──────────────┘       └──────────────┘
@@ -221,8 +221,8 @@ STEP / IGES / BREP / STL
 - 装配体（贴合式）网格依赖一次 `BooleanFragments` 布尔运算；若该作业失败会降级为
   逐实体网格，此时接触面上的重合面片可能被 Geant4 判定为 Overlap。
 - 网格重叠提取最多报告 8 对重叠实体。
-- 网格生成依赖随包提供的 `gmsh/gmsh.exe`，仅探测模块目录内的相对路径与 `PATH`，
-  因此需保持目录结构不变。
+- 网格生成只依赖当前环境里的 `gmsh` Python 包（`pip install gmsh`），不需要任何
+  可执行文件，因此 Windows / macOS / Linux 用法一致。
 - 4 MB 及以上的 CAD 文件会在子进程中读取，超时时间为 15 分钟。
 - `fileio/` 目前是空的占位包。
 
@@ -232,9 +232,11 @@ STEP / IGES / BREP / STL
   大 CAD 文件则用 spawn 子进程（`core/cad_process.py`），因为 `TransferRoots()` 持有
   GIL 会冻结界面；接触分析（`mesh/assembly_analysis.py`）同样在 spawn 子进程中运行，
   由 `QTimer` 轮询结果。
-- **GMSH 调用**：`QProcess` 执行 `gmsh.exe <geo> -1`（非交互模式），使用
-  `MergedChannels` 合并输出并逐行解析进度；`.geo` 脚本由模板 + 对话框参数生成。
-  等待循环按 200 ms 切片轮询而非一次性 `waitForFinished`，以保证 **Cancel** 响应及时。
+- **GMSH 调用**：`QProcess` 执行 `sys.executable -u mesh/gmsh_worker.py job.json`，使用
+  `MergedChannels` 合并输出并逐行解析进度；作业文件携带对话框参数，worker 通过 gmsh
+  Python API 完成 importShapes、（可选）fragment、`mesh.generate(2)` 与写出。
+  之所以用子进程：gmsh 求解过程无法在进程内中断，只有 kill 才能让 **Cancel** 与超时
+  真正生效；等待循环按 200 ms 切片轮询而非一次性 `waitForFinished`。
 - **Mesh 按钮状态机**：mesh / re-mesh / cancel 三态由 `RibbonToolbar.set_mesh_state()`
   驱动，运行期间其余按钮禁用。
 - **单例**：`TaskManager` 与 `LegoColorSingleton`。

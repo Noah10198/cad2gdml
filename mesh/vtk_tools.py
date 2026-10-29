@@ -216,15 +216,20 @@ def write_vtk(path: str, pts: Sequence[Point], tris: Sequence[Tri],
 
     It must be UNSTRUCTURED_GRID: core/gdml_generator.py uses
     vtkUnstructuredGridReader + vtkGeometryFilter.
+
+    Coordinates are written as doubles: a "float" header plus 9 significant
+    digits rounds every node to single precision, which is visible in the
+    exported GDML (4*10/23 came out as 1.7391303777694702 instead of
+    1.7391304347826086) and makes a regularly spaced mesh look uneven.
     """
     with open(path, "w", encoding="utf-8") as f:
         f.write("# vtk DataFile Version 3.0\n")
         f.write(f"{title}\n")
         f.write("ASCII\n")
         f.write("DATASET UNSTRUCTURED_GRID\n")
-        f.write(f"POINTS {len(pts)} float\n")
+        f.write(f"POINTS {len(pts)} double\n")
         for x, y, z in pts:
-            f.write(f"{x:.9g} {y:.9g} {z:.9g}\n")
+            f.write(f"{float(x)!r} {float(y)!r} {float(z)!r}\n")
         f.write(f"CELLS {len(tris)} {len(tris) * 4}\n")
         for a, b, c in tris:
             f.write(f"3 {a} {b} {c}\n")

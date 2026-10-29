@@ -1416,12 +1416,12 @@ class MainWindow(QMainWindow):
         # sub-directory; nothing below _mesh_work_dir is deleted here.
         os.makedirs(self._mesh_work_dir, exist_ok=True)
 
-        # Verify gmsh.exe is available
-        from mesh.mesh_runner import find_gmsh_exe
-        if not find_gmsh_exe():
+        # Verify the gmsh Python package is importable
+        from mesh.mesh_runner import gmsh_available
+        if not gmsh_available():
             self._logger.log_system(
-                "[ERROR] gmsh.exe not found. "
-                "Place gmsh.exe in 'codebuddy-2st/gmsh/' folder.",
+                "[ERROR] Python package 'gmsh' not found. "
+                "Install it into this environment with: pip install gmsh",
                 level=LogLevel.ERROR
             )
             return
@@ -2569,9 +2569,9 @@ def _merge_vtk_files(input_vtk_paths: list, output_path: str):
         f.write("Merged mesh output\n")
         f.write("ASCII\n")
         f.write("DATASET UNSTRUCTURED_GRID\n")
-        f.write(f"POINTS {n_points} float\n")
+        f.write(f"POINTS {n_points} double\n")
         for x, y, z in all_points:
-            f.write(f"{x:.10f} {y:.10f} {z:.10f}\n")
+            f.write(f"{float(x)!r} {float(y)!r} {float(z)!r}\n")
         f.write(f"CELLS {n_cells} {n_cells + cell_conn_size}\n")
         for conn in all_cells:
             f.write(f"{len(conn)} {' '.join(str(c) for c in conn)}\n")

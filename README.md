@@ -46,7 +46,7 @@ CAD2GDML is a desktop GUI application that bridges CAD design and particle physi
 | pythonocc-core | >= 7.6 |
 | VTK | >= 9.2 |
 | numpy | >= 1.21 |
-| GMSH | >= 4.10 — bundled as `gmsh/gmsh.exe`, nothing to install |
+| gmsh | >= 4.10 — Python package (`pip install gmsh`), ships the full meshing kernel |
 
 
 ## Installation
@@ -100,12 +100,12 @@ Double-click a part to inspect its properties and right-click it for transform e
     mesh_viewer.md          — Mesh viewer usage
   exampleSTEP/              — Sample STEP assemblies and demo tools
   fileio/                   — File I/O (placeholder)
-  gmsh/                     — Bundled gmsh.exe
   icon/                     — Application icon (cad2gdml.svg)
   mesh/
     assembly_analysis.py    — Background contact analysis of the import
     gmsh_dialog.py          — Mesh parameter configuration dialog
-    mesh_runner.py          — GMSH background thread (QProcess + .geo scripts)
+    gmsh_worker.py          — Child process: one job through the gmsh API
+    mesh_runner.py          — GMSH background thread (QProcess + job spec)
     mesh_viewer.py          — VTK-based 3D mesh viewer (non-modal)
     remesh_scope_dialog.py  — Scope panel: groups, parameters, run progress
     scope.py                — Contact-graph grouping (the re-mesh units)
@@ -162,8 +162,8 @@ The software follows a pipeline-based architecture that processes CAD geometry t
   └──────────┘    └──────────────┘    └──────────┘    └───────────┘
        │                 │                 │                 │
        ▼                 ▼                 ▼                 ▼
-  CAD File→OCC    NIST / Custom       GMSH .exe         GDML XML
-   B-Rep tree     material lib        (QProcess)        tessellated
+  CAD File→OCC    NIST / Custom       gmsh module       GDML XML
+   B-Rep tree     material lib        (child process)   tessellated
 ```
 
 All mesh generation runs in a background `QThread` to keep the UI responsive. The file dialogs (material, mesh, export) open as non-modal dialogs.
@@ -179,7 +179,7 @@ All mesh generation runs in a background `QThread` to keep the UI responsive. Th
       ▼                  ▼                      ▼
 ┌──────────┐    ┌──────────────┐       ┌──────────────┐
 │   core/  │    │     ui/      │       │    mesh/     │
-│ data     │    │ Qt dialogs   │       │ GMSH process │
+│ data     │    │ Qt dialogs   │       │ gmsh worker  │
 │ models   │    │ OCC viewer   │       │ VTK viewer   │
 │ materials│    │ project tree │       │ mesh preview │
 └──────────┘    └──────────────┘       └──────────────┘
@@ -223,8 +223,8 @@ STEP / IGES / BREP / STL
   fails the run degrades to a per-solid mesh, and the coincident contact faces may then be
   reported as overlaps by Geant4.
 - The mesh overlap extraction reports at most 8 overlapping pairs.
-- Meshing needs the bundled `gmsh/gmsh.exe`; only relative paths inside the module folder
-  plus `PATH` are probed, so the folder layout must be preserved.
+- Meshing needs the `gmsh` Python package in the active environment (`pip install gmsh`);
+  nothing is probed on disk, so the app works the same on Windows, macOS and Linux.
 - CAD files of 4 MB and above are read in a child process with a 15-minute timeout.
 - `fileio/` is an empty placeholder package.
 
@@ -234,10 +234,13 @@ STEP / IGES / BREP / STL
   and a spawn child process (`core/cad_process.py`) for large CAD files, because
   `TransferRoots()` holds the GIL and would freeze the UI. Contact analysis
   (`mesh/assembly_analysis.py`) also runs in a spawn process polled by a `QTimer`.
-- **GMSH invocation**: `QProcess` running `gmsh.exe <geo> -1` (non-interactive) with
-  `MergedChannels`; output is parsed line by line for progress. The `.geo` script is
-  generated from a template with the dialog parameters. The wait loop polls in 200 ms
-  slices instead of one long `waitForFinished`, so **Cancel** stays responsive.
+- **GMSH invocation**: `QProcess` running `sys.executable -u mesh/gmsh_worker.py job.json`
+  with `MergedChannels`; output is parsed line by line for progress. The job file carries
+  the dialog parameters and the worker drives the gmsh Python API (importShapes,
+  optional fragment, `mesh.generate(2)`, write). A child process is used because a gmsh
+  solve cannot be interrupted in-process: killing it is what makes **Cancel** and the
+  timeout real. The wait loop polls in 200 ms slices instead of one long
+  `waitForFinished`, so Cancel stays responsive.
 - **Mesh button state machine**: three states (mesh / re-mesh / cancel) driven by
   `RibbonToolbar.set_mesh_state()`; while a job runs the other buttons are disabled.
 - **Singletons**: `TaskManager` and `LegoColorSingleton`.

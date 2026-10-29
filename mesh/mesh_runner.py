@@ -41,49 +41,33 @@ from mesh.vtk_tools import (
     count_coincident_facets, read_vtk, write_vtk,
 )
 
-# ---- .geo script template (same structure as C++ MeshGen.h) ----
-# %1 = input STEP path
-# %2 = Mesh.Algorithm
-# %3 = Mesh.Smoothing
-# %4 = Mesh.CharacteristicLengthFactor  (NOT ElementSizeFactor - that's GMSH 2.x only)
-# %5 = Mesh.MeshSizeMin
-# %6 = Mesh.MeshSizeMax
-# %7 = Mesh.ElementOrder
-# %8 = output VTK path
+# ---- How a job is run -----------------------------------------------------
+# Meshing is performed by the Python `gmsh` module (pip install gmsh), not by a
+# gmsh executable: the wheel contains the whole kernel, so the app has nothing
+# to download or bundle and runs the same way on Windows, macOS and Linux.
+#
+# The module is driven from a child *Python* process (mesh/gmsh_worker.py)
+# rather than imported here, because a surface solve cannot be stopped from the
+# inside -- Cancel and the timeout can only kill a process. The child needs no
+# gmsh.exe, only the interpreter that runs the app.
+WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "gmsh_worker.py")
 
-GEO_TEMPLATE = (
-    'SetFactory("OpenCASCADE");\n'
-    'Merge "%1";\n'
-    'Mesh.Algorithm = %2;\n'
-    'Mesh.Smoothing = %3;\n'
-    'Mesh.CharacteristicLengthFactor = %4;\n'
-    'Mesh.MeshSizeMin = %5;\n'
-    'Mesh.MeshSizeMax = %6;\n'
-    'Mesh.ElementOrder = %7;\n'
-    'Mesh 2;\n'
-    'Save "%8";\n'
-    'Save "%9";\n'
-    'Exit;\n'
-)
 
-# ---- Assembly conformal template ----
-# Merge can be called repeatedly, so there is no need to build a real multi-body
-# STEP: merging several STEP files into one session in turn is equivalent
-# (see merge_demo/README.md).
-ASSEMBLY_HEAD = 'SetFactory("OpenCASCADE");\n'
-ASSEMBLY_MERGE = 'Merge "%s";\n'
-ASSEMBLY_FRAGMENT = 'BooleanFragments{ Volume{:}; Delete; }{ }\n'
-ASSEMBLY_TAIL = (
-    'Mesh.Algorithm = %s;\n'
-    'Mesh.Smoothing = %s;\n'
-    'Mesh.CharacteristicLengthFactor = %s;\n'
-    'Mesh.MeshSizeMin = %s;\n'
-    'Mesh.MeshSizeMax = %s;\n'
-    'Mesh.ElementOrder = %s;\n'
-    'Mesh 2;\n'
-    'Save "%s";\n'
-    'Exit;\n'
-)
+def build_job_spec(step_files, outputs, *, algorithm, smoothing, elem_factor,
+                   size_min, size_max, order, fragment=False) -> dict:
+    """Job description written to <work_dir>/<job>.json and read by the worker."""
+    return {
+        "steps": [str(p) for p in step_files],
+        "outputs": [str(p) for p in outputs],
+        "fragment": bool(fragment),
+        "algorithm": int(algorithm),
+        "smoothing": int(smoothing),
+        "elem_factor": float(elem_factor),
+        "size_min": float(size_min),
+        "size_max": float(size_max),
+        "order": int(order),
+    }
 
 # Default timeouts. Assembly mode runs a single gmsh job, but that job is heavy;
 # 3 minutes (the original per-solid value) would make assembly time out almost
@@ -178,32 +162,42 @@ def process_cpu_seconds(pid: int) -> Optional[float]:
         return None
 
 
-# ---- Auto-detect gmsh.exe ----
+# ---- Availability of the gmsh module ----
 
-def find_gmsh_exe() -> Optional[str]:
-    """Locate gmsh.exe. Checks: project gmsh/, 3rd_app/, and PATH."""
-    candidates = [
-        # User's gmsh folder (inside codebuddy-2st/)
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "gmsh", "gmsh.exe"),
-        # From C++ reference: ../3rd_app/gmsh.exe
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "..", "3rd_app", "gmsh.exe"),
-        # From sourcecode output
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "..", "sourcecode", "output", "3rd_app", "gmsh.exe"),
-    ]
-    # Also check PATH
-    for c in candidates:
-        if os.path.isfile(c):
-            return os.path.abspath(c)
-    # Fallback: try PATH
-    import shutil
-    return shutil.which("gmsh.exe") or shutil.which("gmsh")
+def gmsh_version() -> Optional[str]:
+    """Version of the installed gmsh package, or None when it is missing."""
+    try:
+        import gmsh
+        return getattr(gmsh, "__version__", "unknown")
+    except Exception:
+        return None
+
+
+def worker_interpreter() -> str:
+    """Interpreter for the worker: the one running the app.
+
+    pythonw.exe is avoided on Windows: a GUI interpreter has no console streams,
+    and the log would lose everything gmsh prints.
+    """
+    exe = sys.executable
+    if sys.platform == "win32" and exe.lower().endswith("pythonw.exe"):
+        candidate = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return exe
+
+
+def gmsh_available() -> bool:
+    """True when `import gmsh` works, i.e. `pip install gmsh` was run."""
+    try:
+        import gmsh
+        return hasattr(gmsh, "initialize")
+    except Exception:
+        return False
 
 
 class MeshRunner(QThread):
-    """Generate meshes for geometry nodes using gmsh.exe in background."""
+    """Generate meshes for geometry nodes with the gmsh module, in background."""
 
     progress_updated = pyqtSignal(int, str)
     # (elapsed, idle) in seconds for the running gmsh job. Both the bar and the
@@ -268,10 +262,11 @@ class MeshRunner(QThread):
             n_solids=len(nodes),
         )
 
-        # Locate gmsh.exe
-        self._gmsh_exe = find_gmsh_exe()
-        if self._gmsh_exe:
-            self.log_emitted.emit(f"[GMSH] Using: {self._gmsh_exe}")
+        # The gmsh module is imported by the worker; here it only has to exist.
+        self._gmsh_ok = gmsh_available()
+        if self._gmsh_ok:
+            self.log_emitted.emit(
+                f"[GMSH] python gmsh {gmsh_version()} via {sys.executable}")
 
     def cancel(self):
         self._cancelled = True
@@ -287,12 +282,12 @@ class MeshRunner(QThread):
             self.finished_with_result.emit(False, {}, "No nodes to mesh.")
             return
 
-        if not self._gmsh_exe:
+        if not self._gmsh_ok:
             self.log_emitted.emit(
-                "[ERROR] gmsh.exe not found. Place it in codebuddy-2st/gmsh/ "
-                "or add to PATH."
+                "[ERROR] Python package 'gmsh' not found. Install it with: "
+                "pip install gmsh"
             )
-            self.finished_with_result.emit(False, {}, "gmsh.exe not found.")
+            self.finished_with_result.emit(False, {}, "gmsh module not found.")
             return
 
         os.makedirs(self._work_dir, exist_ok=True)
@@ -357,7 +352,7 @@ class MeshRunner(QThread):
             try:
                 safe_name = self._safe_id(node.entry_id, idx)
                 step_file = os.path.join(self._work_dir, f"{safe_name}_in.step")
-                geo_file = os.path.join(self._work_dir, f"{safe_name}.geo")
+                job_file = os.path.join(self._work_dir, f"{safe_name}.json")
                 vtk_file = os.path.join(self._work_dir, f"{safe_name}.vtk")
                 msh_file = os.path.join(self._work_dir, f"{safe_name}.msh")
 
@@ -378,28 +373,21 @@ class MeshRunner(QThread):
                     f"CharLengthFactor={self._elem_factor}, Order={self._order}"
                 )
 
-                # 3. Write .geo script
-                geo_content = GEO_TEMPLATE.replace("%1", step_file) \
-                    .replace("%2", str(self._algorithm)) \
-                    .replace("%3", str(self._smoothing)) \
-                    .replace("%4", str(self._elem_factor)) \
-                    .replace("%5", str(size_min)) \
-                    .replace("%6", str(size_max)) \
-                    .replace("%7", str(self._order)) \
-                    .replace("%8", vtk_file) \
-                    .replace("%9", msh_file)
-
-                with open(geo_file, "w", encoding="utf-8") as f:
-                    f.write(geo_content)
+                # 3. Write the job description for the gmsh worker
+                spec = build_job_spec(
+                    [step_file], [vtk_file, msh_file],
+                    algorithm=self._algorithm, smoothing=self._smoothing,
+                    elem_factor=self._elem_factor, size_min=size_min,
+                    size_max=size_max, order=self._order)
+                self._write_job(job_file, spec)
 
                 self._begin_stage(pct + 3, band_end,
                                   f"Running GMSH on {node_label}...")
                 self.log_emitted.emit(f"  Generating mesh for {node_label} ...")
 
-                # 4. Launch gmsh.exe with the .geo script. Its output is
-                #    forwarded line by line while it runs, so only the verdict
-                #    is left to report here.
-                ok, _stdout, stop_reason = self._run_gmsh(geo_file)
+                # 4. Run the worker. Its output is forwarded line by line while
+                #    it runs, so only the verdict is left to report here.
+                ok, _stdout, stop_reason = self._run_job(job_file)
                 self._end_stage()
 
                 if stop_reason:
@@ -429,7 +417,7 @@ class MeshRunner(QThread):
                 except Exception:
                     pass
                 try:
-                    os.remove(geo_file)
+                    os.remove(job_file)
                 except Exception:
                     pass
 
@@ -506,23 +494,21 @@ class MeshRunner(QThread):
         size_min = diag / self._mesh_min_factor if self._mesh_min_factor > 0 else 0.001
         size_max = diag / self._mesh_max_factor if self._mesh_max_factor > 0 else 1.0
 
-        geo_file = os.path.join(self._work_dir, "assembly.geo")
+        job_file = os.path.join(self._work_dir, "assembly.json")
         asm_vtk = os.path.join(self._work_dir, "assembly.vtk")
-        chunk = [ASSEMBLY_HEAD]
-        chunk += [ASSEMBLY_MERGE % sf.replace("\\", "/") for sf in step_files]
-        chunk.append(ASSEMBLY_FRAGMENT)
-        chunk.append(ASSEMBLY_TAIL % (
-            self._algorithm, self._smoothing, self._elem_factor,
-            size_min, size_max, self._order, asm_vtk.replace("\\", "/")))
-        with open(geo_file, "w", encoding="utf-8") as f:
-            f.write("".join(chunk))
+        spec = build_job_spec(
+            step_files, [asm_vtk], fragment=True,
+            algorithm=self._algorithm, smoothing=self._smoothing,
+            elem_factor=self._elem_factor, size_min=size_min,
+            size_max=size_max, order=self._order)
+        self._write_job(job_file, spec)
 
         self.log_emitted.emit(
             f"  assembly job: {len(step_files)} solids, SizeMin={size_min:.4f}, "
             f"SizeMax={size_max:.4f}, CharLengthFactor={self._elem_factor}")
         self._begin_stage(18, 60, "BooleanFragments + assembly meshing...")
 
-        ok, _stdout, stop_reason = self._run_gmsh(geo_file)
+        ok, _stdout, stop_reason = self._run_job(job_file)
         self._end_stage()
         if stop_reason:
             return False, {}, self._stop_message(stop_reason)
@@ -675,7 +661,7 @@ class MeshRunner(QThread):
             "timeout": "gmsh timed out and was killed (consider a longer timeout "
                        "for assembly jobs)",
             "cancelled": "Cancelled.",
-            "start_failed": "failed to start gmsh",
+            "start_failed": "failed to start the gmsh worker process",
         }.get(reason, reason)
 
     # ---------------------------------------------------------------
@@ -754,8 +740,18 @@ class MeshRunner(QThread):
             self._stage_value = value
             self.progress_updated.emit(value, self._stage_msg)
 
-    def _run_gmsh(self, geo_file: str):
-        """Run gmsh.exe, return (ok, stdout_text, stop_reason).
+    def _write_job(self, path: str, spec: dict) -> None:
+        import json
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(spec, f, indent=2)
+
+    def _run_job(self, job_file: str):
+        """Run mesh/gmsh_worker.py on a job file, return (ok, output, reason).
+
+        The worker is the app's own interpreter (`sys.executable`) importing the
+        gmsh module, so the run depends on the environment, not on a bundled
+        executable. Being a child process is what keeps Cancel and the timeout
+        real: a gmsh solve in this process could not be stopped.
 
         Polls in 200 ms slices instead of a single waitForFinished(timeout):
         otherwise the Cancel button would be unresponsive during a long
@@ -766,8 +762,9 @@ class MeshRunner(QThread):
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.setWorkingDirectory(self._work_dir)
 
-        args = [geo_file, "-1"]  # -1 = non-interactive mode (same as C++ reference)
-        proc.start(self._gmsh_exe, args)
+        # -u: unbuffered stdout, so gmsh's progress lines arrive as they happen
+        args = ["-u", WORKER_SCRIPT, job_file]
+        proc.start(worker_interpreter(), args)
         if not proc.waitForStarted(10 * 1000):
             return False, "", "start_failed"
 

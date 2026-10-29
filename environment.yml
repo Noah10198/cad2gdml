@@ -1,4 +1,4 @@
-name: easy2rad-env
+name: easy2rad-env-plusgmsh
 channels:
   - conda-forge
   - defaults          
@@ -20,4 +20,6 @@ dependencies:
       - PyQt6-Qt6==6.4.3   
       - pyqtgraph
       - colorlog
-      - contourpy  
+      - contourpy
+      - gmsh
+      - gmsh

@@ -3,8 +3,8 @@
 ## Overview
 
 Mesh generation tessellates the **surfaces** of CAD solid bodies into triangles using **GMSH**
-(`gmsh.exe`). It is a 2D surface mesh (`Mesh 2` in the `.geo` script), not a tetrahedral volume
-mesh. The process runs in a background thread, keeping the UI responsive.
+(the `gmsh` Python package). It is a 2D surface mesh (`mesh.generate(2)`), not a tetrahedral
+volume mesh. The process runs in a background thread, keeping the UI responsive.
 
 > **File format is not the mesh type.** The `.vtk` files are written as legacy
 > `DATASET UNSTRUCTURED_GRID` because that is what gmsh emits and what
@@ -62,7 +62,7 @@ after import (`mesh/assembly_analysis.py`), not by the user:
 
 | Mode | How it works | When it is used |
 |------|--------------|-----------------|
-| **Per-solid** | One STEP file and one gmsh process per solid body. Both sides of a contact face get their own facet set, so coincident facets remain and Geant4 may report false Overlaps. | A single solid, or an assembly whose contact analysis failed. |
+| **Per-solid** | One STEP file and one gmsh worker process per solid body. Both sides of a contact face get their own facet set, so coincident facets remain and Geant4 may report false Overlaps. | A single solid, or an assembly whose contact analysis failed. |
 | **Assembly (conformal)** | All solids are merged into one gmsh session and a single `BooleanFragments` genuinely splits the touching faces, so both sides share the same topology and only one set of interface facets remains. The resulting triangles are then reassigned back to their original solids. | Two or more solids with touching contact faces. |
 
 A failed assembly job is never a dead end: every failing step **degrades to per-solid
@@ -73,8 +73,9 @@ A degraded run reports at most the first 8 contact pairs.
 
 ### Background Execution
 
-- The `MeshRunner` extends `QThread` and runs gmsh.exe via `QProcess`.
-- Per-solid mode runs one gmsh process per body, sequentially; assembly mode runs a single
+- The `MeshRunner` extends `QThread` and runs `mesh/gmsh_worker.py` via `QProcess`,
+  started with the application's own interpreter (`sys.executable`).
+- Per-solid mode runs one worker process per body, sequentially; assembly mode runs a single
   job for the whole group.
 - Timeout: 3 minutes per solid, 15 minutes for a single assembly job.
 - The wait loop polls in 200 ms slices instead of one long `waitForFinished`, so **Cancel**
@@ -85,52 +86,62 @@ A degraded run reports at most the first 8 contact pairs.
 For each solid node:
 
 1. **Export** the solid shape to a temporary `.step` file.
-2. **Write** a `.geo` script with the selected mesh parameters.
-3. **Launch** `gmsh.exe` with the `.geo` script:
+2. **Write** a job description (`.json`) with the selected mesh parameters.
+3. **Run** the worker on it:
 
 ```bash
-gmsh.exe input.geo -1  # -1 = non-interactive; writes the .vtk / .msh named in the script
+python -u mesh/gmsh_worker.py input.json  # writes the .vtk / .msh named in the job
 ```
 
 4. **Read** the generated `.vtk` file back into the application.
 5. **Register** the mesh file path with the solid node.
 
-### .geo Script Template
+### Job Description
 
-```python
-SetFactory("OpenCASCADE");
-Merge "input.step";
-Mesh.Algorithm = 6;           # Frontal-Delaunay
-Mesh.Smoothing = 1;           # smoothing steps
-Mesh.CharacteristicLengthFactor = 1.0;
-Mesh.MeshSizeMin = 0.01;      # computed from bounding box
-Mesh.MeshSizeMax = 0.1;       # computed from bounding box
-Mesh.ElementOrder = 1;        # 1st Order
-Mesh 2;                       # generate 2D (surface) mesh
-Save "output.vtk";
-Save "output.msh";
-Exit;
+The job file holds only paths and numbers; `mesh/gmsh_worker.py` turns it into gmsh API
+calls. A per-solid job:
+
+```json
+{
+  "steps": ["input.step"],
+  "outputs": ["output.vtk", "output.msh"],
+  "fragment": false,
+  "algorithm": 6,
+  "smoothing": 1,
+  "elem_factor": 1.0,
+  "size_min": 0.01,
+  "size_max": 0.1,
+  "order": 1
+}
 ```
 
-### Assembly .geo Script
-
-One script for the whole group: `Merge` is called once per STEP file, then a single
-`BooleanFragments` splits the contact faces, and the same parameter tail is appended.
+which the worker executes as:
 
 ```python
-SetFactory("OpenCASCADE");
-Merge "solid_1.step";
-Merge "solid_2.step";
-BooleanFragments{ Volume{:}; Delete; }{ }
-Mesh.Algorithm = 6;
-Mesh.Smoothing = 1;
-Mesh.CharacteristicLengthFactor = 1.0;
-Mesh.MeshSizeMin = 0.01;      # computed from the overall bounding box
-Mesh.MeshSizeMax = 0.1;
-Mesh.ElementOrder = 1;
-Mesh 2;
-Save "assembly.vtk";
-Exit;
+gmsh.model.occ.importShapes("input.step")
+gmsh.model.occ.synchronize()
+gmsh.option.setNumber("Mesh.Algorithm", 6)               # Frontal-Delaunay
+gmsh.option.setNumber("Mesh.Smoothing", 1)
+gmsh.option.setNumber("Mesh.CharacteristicLengthFactor", 1.0)
+gmsh.option.setNumber("Mesh.MeshSizeMin", 0.01)          # from bounding box
+gmsh.option.setNumber("Mesh.MeshSizeMax", 0.1)           # from bounding box
+gmsh.option.setNumber("Mesh.ElementOrder", 1)
+gmsh.model.mesh.generate(2)                              # surface mesh, no volume
+gmsh.write("output.vtk")
+gmsh.write("output.msh")
+```
+
+### Assembly Job
+
+One job for the whole group: every STEP file is imported, then `fragment: true` runs a single
+`BooleanFragments` that splits the contact faces, and the same options are applied:
+
+```python
+for step in ["solid_1.step", "solid_2.step"]:
+    gmsh.model.occ.importShapes(step)
+gmsh.model.occ.synchronize()
+gmsh.model.occ.fragment(gmsh.model.getEntities(3), [])
+gmsh.model.occ.synchronize()
 ```
 
 The mesh size factors come from the **overall** bounding box, because the whole group is a
@@ -192,13 +203,17 @@ Click **Export Mesh** on the toolbar.
 
 ---
 
-## GMSH Executable Location
+## GMSH Installation
 
-The application searches for `gmsh.exe` in the following order:
+Meshing uses the `gmsh` **Python package** only — no executable is required:
 
-1. `gmsh/` folder inside the project directory — place `gmsh.exe` there
-2. `../3rd_app/gmsh.exe` (C++ reference layout)
-3. `../sourcecode/output/3rd_app/gmsh.exe`
-4. System `PATH`
+```bash
+pip install gmsh          # or: conda install -c conda-forge gmsh
+```
 
-If `gmsh.exe` is not found, mesh generation will fail with an error message.
+The wheel contains the whole kernel (`libgmsh` / `gmsh.dll`) with OpenCASCADE support, so
+the same code runs on Windows, macOS and Linux. If the package is missing from the active
+environment, the mesh button logs `Python package 'gmsh' not found` and stops.
+
+The worker is a child process on purpose: a running gmsh solve cannot be interrupted from
+inside the process, so Cancel and the timeout can only kill it.

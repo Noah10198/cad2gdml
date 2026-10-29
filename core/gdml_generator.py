@@ -28,6 +28,17 @@ def _make_safe_name(raw: str) -> str:
     return raw.replace(":", "_").replace("/", "_").replace("\\", "_").replace(" ", "_")
 
 
+def _num(value: float) -> str:
+    """Shortest decimal text that round-trips to the same IEEE-754 double.
+
+    Geant4 reads GDML lengths as doubles, so a fixed number of decimals throws
+    away the coordinates gmsh computed (and turns anything below 1e-6 mm into
+    zero). repr() of a Python float is the shortest exact form: "0.1" stays
+    "0.1", while a value that needs all 17 digits gets them.
+    """
+    return repr(float(value))
+
+
 def compute_global_bbox(solid_nodes: List[GDataNode]) -> Tuple[float, float, float]:
     """Compute the axis-aligned bounding box spanning all solid shapes.
 
@@ -237,9 +248,9 @@ def generate_gdml(
     ET.SubElement(solids_elem, "box", {
         "lunit": "mm",
         "name": "WorldBox",
-        "x": f"{half * 2:.6f}",
-        "y": f"{half * 2:.6f}",
-        "z": f"{half * 2:.6f}",
+        "x": _num(half * 2),
+        "y": _num(half * 2),
+        "z": _num(half * 2),
     })
 
     # Part solids
@@ -262,9 +273,9 @@ def generate_gdml(
             ET.SubElement(define_elem, "position", {
                 "name": f"{safe}_v{vi}",
                 "unit": "mm",
-                "x": f"{vx:.6f}",
-                "y": f"{vy:.6f}",
-                "z": f"{vz:.6f}",
+                "x": _num(vx),
+                "y": _num(vy),
+                "z": _num(vz),
             })
 
         # Tessellated
